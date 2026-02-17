@@ -261,28 +261,8 @@ app.get('/auth/callback', async (c) => {
     const tokens = await tokenResponse.json()
     const { access_token, refresh_token, expires_in } = tokens
 
-    // Store tokens in Vault using service_role client
+    // Store tokens directly in qbo_connection (protected by deny-all RLS)
     const serviceClient = getServiceClient()
-
-    const { data: accessVaultId, error: accessVaultError } = await serviceClient.rpc(
-      'create_vault_secret',
-      { secret: access_token, name: 'qbo_access_token' }
-    )
-
-    if (accessVaultError) {
-      console.error('[OAuth] Failed to store access token in Vault:', accessVaultError)
-      return c.redirect(`${frontendUrl}?qbo_error=token_exchange_failed`)
-    }
-
-    const { data: refreshVaultId, error: refreshVaultError } = await serviceClient.rpc(
-      'create_vault_secret',
-      { secret: refresh_token, name: 'qbo_refresh_token' }
-    )
-
-    if (refreshVaultError) {
-      console.error('[OAuth] Failed to store refresh token in Vault:', refreshVaultError)
-      return c.redirect(`${frontendUrl}?qbo_error=token_exchange_failed`)
-    }
 
     // Fetch company name from QBO (non-blocking — failure does not abort the flow)
     let companyName: string | null = null
@@ -301,13 +281,13 @@ app.get('/auth/callback', async (c) => {
       console.warn('[OAuth] Company info fetch error (non-fatal):', err)
     }
 
-    // Upsert connection record
+    // Upsert connection record (tokens stored directly, protected by deny-all RLS)
     const { error: upsertError } = await serviceClient.from('qbo_connection').upsert(
       {
         realm_id: realmId,
         company_name: companyName,
-        token_vault_id: accessVaultId,
-        refresh_token_vault_id: refreshVaultId,
+        access_token: access_token,
+        refresh_token: refresh_token,
         token_expires_at: new Date(Date.now() + expires_in * 1000).toISOString(),
         token_issued_at: new Date().toISOString(),
         is_active: true,
