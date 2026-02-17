@@ -30,12 +30,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Supabase Edge Function with Hono routing is deployed and reachable — no QBO calls leak through the frontend
   3. `expenses` table has QBO sync columns (`qbo_purchase_id`, `qbo_pushed_at`, `qbo_error`, `qbo_sync_attempts`) and `qbo_connection` table exists with `realm_id` and `token_vault_id`
   4. All QBO API calls include `minorversion=75` query parameter
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: Database migrations (expenses sync columns, qbo_connection table, Vault extension, RLS policies)
-- [ ] 01-02: Edge Function scaffold with Hono routing, CORS, auth middleware, error handler
-- [ ] 01-03: OAuth flow endpoints (`/auth/start`, `/auth/callback`), token storage in Vault, frontend "Connect to QuickBooks" button
+- [ ] 01-01-PLAN.md — Supabase CLI init, database migrations (expenses QBO columns, qbo_connection table, Vault extension, wrapper functions, RLS)
+- [ ] 01-02-PLAN.md — Edge Function scaffold with Hono routing, CORS, JWT auth middleware, qboFetch helper (minorversion=75), error handling
+- [ ] 01-03-PLAN.md — OAuth flow endpoints (/auth/start, /auth/callback), Vault token storage, frontend "Connect to QuickBooks" button and connection status badge
 
 ### Phase 2: Token Management
 **Goal**: Access tokens refresh automatically every hour without user awareness, refresh token rotation is race-condition safe, and the 5-year expiry is tracked
@@ -121,7 +121,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/3 | Not started | - |
+| 1. Foundation | 0/3 | Planning complete | - |
 | 2. Token Management | 0/2 | Not started | - |
 | 3. Entity Sync | 0/3 | Not started | - |
 | 4. Purchase Creation | 0/3 | Not started | - |
