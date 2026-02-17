@@ -55,11 +55,19 @@ const AUTH_EXCLUDED_SUFFIXES = [
   '/entities/vendors/find-or-create', '/entities/refresh',
 ]
 
+// Dynamic route patterns excluded from JWT (e.g. /expenses/:id/submit)
+const AUTH_EXCLUDED_PATTERNS = [
+  /\/expenses\/[^/]+\/submit$/,
+]
+
 app.use('*', async (c, next) => {
   const path = c.req.path
 
   // Skip JWT verification for excluded paths
-  if (AUTH_EXCLUDED_SUFFIXES.some((suffix) => path.endsWith(suffix))) {
+  if (
+    AUTH_EXCLUDED_SUFFIXES.some((suffix) => path.endsWith(suffix)) ||
+    AUTH_EXCLUDED_PATTERNS.some((pattern) => pattern.test(path))
+  ) {
     return next()
   }
 
@@ -979,6 +987,205 @@ app.post('/entities/refresh', async (c) => {
   } catch (err) {
     console.error('[entities/refresh] Error:', err)
     return c.json({ error: 'Failed to refresh entity cache' }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Expense Submit (Phase 4)
+// ---------------------------------------------------------------------------
+
+// POST /expenses/:expenseId/submit — push an expense to QBO as a Purchase
+app.post('/expenses/:expenseId/submit', async (c) => {
+  const expenseId = c.req.param('expenseId')
+  const client = getServiceClient()
+
+  try {
+    // 1. Read the expense row
+    const { data: expense, error: fetchError } = await client
+      .from('expenses')
+      .select('*')
+      .eq('id', expenseId)
+      .single()
+
+    if (fetchError || !expense) {
+      console.error('[submit] Expense not found:', expenseId, fetchError)
+      return c.json({ error: 'Expense not found' }, 404)
+    }
+
+    // 2. Validate required QBO fields
+    if (!expense.qbo_account_id || !expense.qbo_payment_account_id) {
+      return c.json(
+        { error: 'Missing required QBO fields (qbo_account_id, qbo_payment_account_id)' },
+        400
+      )
+    }
+
+    // 3. Resolve vendor — if qbo_vendor_id is null but vendor name exists, find-or-create
+    let vendorId = expense.qbo_vendor_id
+    if (!vendorId && expense.vendor) {
+      const conn = await getActiveConnection()
+      if (!conn) return c.json({ error: 'No active QBO connection' }, 400)
+
+      // Search cache first
+      const nameLower = expense.vendor.trim().toLowerCase()
+      const { data: cachedVendors } = await client
+        .from('qbo_entity_vendors')
+        .select('qbo_id, display_name')
+        .eq('realm_id', conn.realm_id)
+        .eq('is_active', true)
+
+      const cacheMatch = (cachedVendors ?? []).find(
+        (v: Record<string, unknown>) =>
+          (v.display_name as string).toLowerCase() === nameLower
+      )
+
+      if (cacheMatch) {
+        vendorId = cacheMatch.qbo_id as string
+      } else {
+        // Query QBO
+        const query = encodeURIComponent(
+          `SELECT * FROM Vendor WHERE DisplayName = '${expense.vendor.trim().replace(/'/g, "\\'")}'`
+        )
+        const qboResp = await authenticatedQboFetch(`/v3/company/{realmId}/query?query=${query}`)
+        if (qboResp.ok) {
+          const qboBody = await qboResp.json()
+          const vendors = qboBody?.QueryResponse?.Vendor ?? []
+          if (vendors.length > 0) {
+            vendorId = String(vendors[0].Id)
+            // Upsert cache
+            await client.from('qbo_entity_vendors').upsert(
+              {
+                realm_id: conn.realm_id,
+                qbo_id: vendorId,
+                display_name: vendors[0].DisplayName,
+                is_active: true,
+                synced_at: new Date().toISOString(),
+              },
+              { onConflict: 'realm_id,qbo_id' }
+            )
+          }
+        }
+
+        // Still no vendor? Create in QBO
+        if (!vendorId) {
+          console.log(`[submit] Creating vendor in QBO: "${expense.vendor}"`)
+          const createResp = await authenticatedQboFetch(`/v3/company/{realmId}/vendor`, {
+            method: 'POST',
+            body: JSON.stringify({ DisplayName: expense.vendor.trim() }),
+          })
+          if (!createResp.ok) {
+            const errText = await createResp.text()
+            console.error('[submit] Vendor create failed:', createResp.status, errText)
+            await client
+              .from('expenses')
+              .update({
+                qbo_error: `Vendor create failed: ${createResp.status}`,
+                qbo_sync_attempts: (expense.qbo_sync_attempts ?? 0) + 1,
+              })
+              .eq('id', expenseId)
+            return c.json({ error: `Failed to create vendor: ${createResp.status}` }, 500)
+          }
+          const created = await createResp.json()
+          vendorId = String(created.Vendor.Id)
+          await client.from('qbo_entity_vendors').upsert(
+            {
+              realm_id: conn.realm_id,
+              qbo_id: vendorId,
+              display_name: created.Vendor.DisplayName,
+              is_active: true,
+              synced_at: new Date().toISOString(),
+            },
+            { onConflict: 'realm_id,qbo_id' }
+          )
+        }
+
+        // Save resolved vendor ID back to expense
+        await client.from('expenses').update({ qbo_vendor_id: vendorId }).eq('id', expenseId)
+      }
+    }
+
+    // 4. Build QBO Purchase payload
+    const lineDetail: Record<string, unknown> = {
+      AccountRef: { value: expense.qbo_account_id },
+    }
+    if (expense.qbo_class_id) {
+      lineDetail.ClassRef = { value: expense.qbo_class_id }
+    }
+
+    const purchaseBody: Record<string, unknown> = {
+      PaymentType: 'CreditCard',
+      AccountRef: { value: expense.qbo_payment_account_id },
+      TxnDate: expense.date,
+      TotalAmt: Number(expense.amount),
+      Line: [
+        {
+          Amount: Number(expense.amount),
+          DetailType: 'AccountBasedExpenseLineDetail',
+          AccountBasedExpenseLineDetail: lineDetail,
+        },
+      ],
+    }
+
+    if (vendorId) {
+      purchaseBody.VendorRef = { value: vendorId }
+    }
+    if (expense.memo) {
+      purchaseBody.PrivateNote = expense.memo
+    }
+
+    // 5. POST to QBO
+    console.log(`[submit] Creating Purchase in QBO for expense ${expenseId}`)
+    const resp = await authenticatedQboFetch(`/v3/company/{realmId}/purchase`, {
+      method: 'POST',
+      body: JSON.stringify(purchaseBody),
+    })
+
+    if (!resp.ok) {
+      const errText = await resp.text()
+      console.error('[submit] QBO Purchase create failed:', resp.status, errText)
+
+      // 7. Failure — increment attempts, store error
+      await client
+        .from('expenses')
+        .update({
+          qbo_error: `Purchase create failed: ${resp.status} - ${errText.substring(0, 500)}`,
+          qbo_sync_attempts: (expense.qbo_sync_attempts ?? 0) + 1,
+        })
+        .eq('id', expenseId)
+
+      return c.json({ error: `QBO Purchase create failed: ${resp.status}` }, 500)
+    }
+
+    const result = await resp.json()
+    const purchaseId = result?.Purchase?.Id
+
+    // 6. Success — update expense row
+    const pushedAt = new Date().toISOString()
+    await client
+      .from('expenses')
+      .update({
+        qbo_purchase_id: String(purchaseId),
+        qbo_pushed_at: pushedAt,
+        qbo_error: null,
+        qbo_sync_attempts: (expense.qbo_sync_attempts ?? 0) + 1,
+      })
+      .eq('id', expenseId)
+
+    console.log(`[submit] Purchase created: ${purchaseId} for expense ${expenseId}`)
+    return c.json({ purchase_id: String(purchaseId), pushed_at: pushedAt })
+  } catch (err) {
+    console.error('[submit] Unexpected error:', err)
+
+    // Best-effort: store error on expense row
+    await client
+      .from('expenses')
+      .update({
+        qbo_error: `Unexpected: ${err instanceof Error ? err.message : String(err)}`,
+      })
+      .eq('id', expenseId)
+      .then(() => {}, () => {})
+
+    return c.json({ error: 'Failed to submit expense to QBO' }, 500)
   }
 })
 

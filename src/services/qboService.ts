@@ -146,3 +146,24 @@ export async function refreshEntityCache(): Promise<void> {
     throw new Error('Failed to refresh entity cache')
   }
 }
+
+// ---------------------------------------------------------------------------
+// Expense Submit (Phase 4)
+// ---------------------------------------------------------------------------
+
+export interface SubmitExpenseResult {
+  purchase_id: string
+  pushed_at: string
+}
+
+export async function submitExpenseToQbo(expenseId: string): Promise<SubmitExpenseResult> {
+  const response = await fetch(
+    `${supabaseUrl}/functions/v1/qbo-api/expenses/${expenseId}/submit`,
+    { method: 'POST', headers: authHeaders }
+  )
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.error || `Submit failed: ${response.status}`)
+  }
+  return response.json()
+}

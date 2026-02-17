@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getExpenses, deleteExpense, Expense } from '../services/supabase';
+import { submitExpenseToQbo } from '../services/qboService';
 
 interface ExpenseListProps {
   onScanNew: () => void;
@@ -11,6 +12,7 @@ export function ExpenseList({ onScanNew, refreshTrigger }: ExpenseListProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [submittingId, setSubmittingId] = useState<string | null>(null);
 
   const loadExpenses = async () => {
     setIsLoading(true);
@@ -36,6 +38,28 @@ export function ExpenseList({ onScanNew, refreshTrigger }: ExpenseListProps) {
       setExpenses(expenses.filter(e => e.id !== id));
     } catch (err) {
       alert('Failed to delete expense');
+    }
+  };
+
+  const handleSubmitToQbo = async (expense: Expense) => {
+    if (!expense.id) return;
+    setSubmittingId(expense.id);
+    try {
+      const result = await submitExpenseToQbo(expense.id);
+      setExpenses(prev =>
+        prev.map(e =>
+          e.id === expense.id
+            ? { ...e, qbo_purchase_id: result.purchase_id, qbo_pushed_at: result.pushed_at, qbo_error: null }
+            : e
+        )
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Submit failed';
+      alert(message);
+      // Refresh to get updated error/attempts from DB
+      loadExpenses();
+    } finally {
+      setSubmittingId(null);
     }
   };
 
@@ -212,6 +236,72 @@ export function ExpenseList({ onScanNew, refreshTrigger }: ExpenseListProps) {
                 >
                   Delete
                 </button>
+                {/* QBO Submit Button */}
+                {expense.qbo_pushed_at ? (
+                  <span
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      backgroundColor: '#f0fdf4',
+                      color: '#16a34a',
+                      borderRadius: '4px',
+                      fontWeight: '600',
+                    }}
+                  >
+                    Submitted
+                  </span>
+                ) : expense.qbo_error && (expense.qbo_sync_attempts ?? 0) >= 3 ? (
+                  <span
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      backgroundColor: '#f3f4f6',
+                      color: '#9ca3af',
+                      borderRadius: '4px',
+                      fontWeight: '600',
+                    }}
+                    title={expense.qbo_error}
+                  >
+                    Failed
+                  </span>
+                ) : expense.qbo_error ? (
+                  <button
+                    onClick={() => handleSubmitToQbo(expense)}
+                    disabled={submittingId === expense.id}
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      backgroundColor: '#fef2f2',
+                      color: '#dc2626',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: submittingId === expense.id ? 'wait' : 'pointer',
+                      fontWeight: '600',
+                      opacity: submittingId === expense.id ? 0.6 : 1,
+                    }}
+                    title={expense.qbo_error}
+                  >
+                    {submittingId === expense.id ? 'Retrying...' : 'Retry'}
+                  </button>
+                ) : expense.qbo_account_id ? (
+                  <button
+                    onClick={() => handleSubmitToQbo(expense)}
+                    disabled={submittingId === expense.id}
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      backgroundColor: '#eff6ff',
+                      color: '#2563eb',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: submittingId === expense.id ? 'wait' : 'pointer',
+                      fontWeight: '600',
+                      opacity: submittingId === expense.id ? 0.6 : 1,
+                    }}
+                  >
+                    {submittingId === expense.id ? 'Submitting...' : 'Submit to QBO'}
+                  </button>
+                ) : null}
               </div>
             </div>
           ))}

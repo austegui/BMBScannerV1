@@ -37,6 +37,10 @@ export interface Expense {
   qbo_account_name: string | null;
   qbo_payment_account_id: string | null;
   qbo_class_id: string | null;
+  qbo_purchase_id: string | null;
+  qbo_pushed_at: string | null;
+  qbo_error: string | null;
+  qbo_sync_attempts: number;
 }
 
 /**
