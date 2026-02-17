@@ -1,0 +1,36 @@
+# Environment variables (API keys)
+.env
+.env.local
+.env.*.local
+
+# GSD planning docs (tracked in git)
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Temp files
+nul
+
+# Icon generation scripts (temporary)
+create-icons.js
+create-icons.mjs
+
+# Supabase local secrets and temporary files (never commit)
+supabase/.env.local
+supabase/.temp/
