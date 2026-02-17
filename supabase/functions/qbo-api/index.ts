@@ -160,27 +160,55 @@ app.get('/health', (c) => {
 // OAuth routes (Plan 01-03)
 // ---------------------------------------------------------------------------
 
-// In-memory CSRF state store. Single-company admin-only flow — in-memory is acceptable.
-// State entries expire after 10 minutes.
-const pendingStates = new Map<string, number>()
+// HMAC-signed state tokens for CSRF protection.
+// Survives edge function cold starts (no server-side storage needed).
 const STATE_TTL_MS = 10 * 60 * 1000 // 10 minutes
 
-function cleanExpiredStates() {
-  const now = Date.now()
-  for (const [state, timestamp] of pendingStates.entries()) {
-    if (now - timestamp > STATE_TTL_MS) {
-      pendingStates.delete(state)
-    }
+let _hmacKey: CryptoKey | null = null
+
+async function getHmacKey(): Promise<CryptoKey> {
+  if (!_hmacKey) {
+    const secret = Deno.env.get('QBO_CLIENT_SECRET') ?? ''
+    _hmacKey = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign', 'verify']
+    )
   }
+  return _hmacKey
+}
+
+async function createSignedState(): Promise<string> {
+  const timestamp = Date.now().toString()
+  const key = await getHmacKey()
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(timestamp))
+  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
+  return `${timestamp}.${sigB64}`
+}
+
+async function verifySignedState(state: string): Promise<boolean> {
+  const dotIdx = state.indexOf('.')
+  if (dotIdx === -1) return false
+
+  const timestamp = state.substring(0, dotIdx)
+  const sigB64 = state.substring(dotIdx + 1)
+
+  // Check expiry
+  const age = Date.now() - parseInt(timestamp, 10)
+  if (isNaN(age) || age < 0 || age > STATE_TTL_MS) return false
+
+  // Verify HMAC
+  const key = await getHmacKey()
+  const sigBytes = Uint8Array.from(atob(sigB64), (c) => c.charCodeAt(0))
+  return crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(timestamp))
 }
 
 // GET /auth/start
 // Generate QBO OAuth authorization URL and return it to the frontend.
-app.get('/auth/start', (c) => {
-  cleanExpiredStates()
-
-  const state = crypto.randomUUID()
-  pendingStates.set(state, Date.now())
+app.get('/auth/start', async (c) => {
+  const state = await createSignedState()
 
   const clientId = Deno.env.get('QBO_CLIENT_ID') ?? ''
   const redirectUri = Deno.env.get('QBO_REDIRECT_URI') ?? ''
@@ -192,7 +220,7 @@ app.get('/auth/start', (c) => {
   authUrl.searchParams.set('scope', 'com.intuit.quickbooks.accounting')
   authUrl.searchParams.set('state', state)
 
-  console.log(`[OAuth] /auth/start generated state=${state}`)
+  console.log(`[OAuth] /auth/start generated signed state`)
 
   return c.json({ url: authUrl.toString() })
 })
@@ -209,17 +237,9 @@ app.get('/auth/callback', async (c) => {
     const state = url.searchParams.get('state')
     const realmId = url.searchParams.get('realmId')
 
-    // Validate state (CSRF protection)
-    if (!state || !pendingStates.has(state)) {
-      console.warn(`[OAuth] Invalid or expired state: ${state}`)
-      return c.redirect(`${frontendUrl}?qbo_error=invalid_state`)
-    }
-
-    const stateTimestamp = pendingStates.get(state)!
-    pendingStates.delete(state) // One-time use
-
-    if (Date.now() - stateTimestamp > STATE_TTL_MS) {
-      console.warn(`[OAuth] Expired state: ${state}`)
+    // Validate HMAC-signed state (CSRF protection, survives cold starts)
+    if (!state || !(await verifySignedState(state))) {
+      console.warn(`[OAuth] Invalid or expired state`)
       return c.redirect(`${frontendUrl}?qbo_error=invalid_state`)
     }
 
