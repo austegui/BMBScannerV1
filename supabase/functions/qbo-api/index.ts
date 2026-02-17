@@ -156,10 +156,202 @@ app.get('/health', (c) => {
   return c.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
+// ---------------------------------------------------------------------------
 // OAuth routes (Plan 01-03)
-// app.get('/auth/start', ...)
-// app.get('/auth/callback', ...)
-// app.get('/connection/status', ...)
+// ---------------------------------------------------------------------------
+
+// In-memory CSRF state store. Single-company admin-only flow — in-memory is acceptable.
+// State entries expire after 10 minutes.
+const pendingStates = new Map<string, number>()
+const STATE_TTL_MS = 10 * 60 * 1000 // 10 minutes
+
+function cleanExpiredStates() {
+  const now = Date.now()
+  for (const [state, timestamp] of pendingStates.entries()) {
+    if (now - timestamp > STATE_TTL_MS) {
+      pendingStates.delete(state)
+    }
+  }
+}
+
+// GET /auth/start
+// Generate QBO OAuth authorization URL and return it to the frontend.
+app.get('/auth/start', (c) => {
+  cleanExpiredStates()
+
+  const state = crypto.randomUUID()
+  pendingStates.set(state, Date.now())
+
+  const clientId = Deno.env.get('QBO_CLIENT_ID') ?? ''
+  const redirectUri = Deno.env.get('QBO_REDIRECT_URI') ?? ''
+
+  const authUrl = new URL('https://appcenter.intuit.com/connect/oauth2')
+  authUrl.searchParams.set('client_id', clientId)
+  authUrl.searchParams.set('redirect_uri', redirectUri)
+  authUrl.searchParams.set('response_type', 'code')
+  authUrl.searchParams.set('scope', 'com.intuit.quickbooks.accounting')
+  authUrl.searchParams.set('state', state)
+
+  console.log(`[OAuth] /auth/start generated state=${state}`)
+
+  return c.json({ url: authUrl.toString() })
+})
+
+// GET /auth/callback
+// Handle QBO OAuth redirect, exchange code for tokens, store in Vault.
+// CRITICAL: This route is EXCLUDED from JWT middleware — browser navigates here directly.
+app.get('/auth/callback', async (c) => {
+  const frontendUrl = Deno.env.get('QBO_FRONTEND_URL') ?? 'http://localhost:5173'
+
+  try {
+    const url = new URL(c.req.url)
+    const code = url.searchParams.get('code')
+    const state = url.searchParams.get('state')
+    const realmId = url.searchParams.get('realmId')
+
+    // Validate state (CSRF protection)
+    if (!state || !pendingStates.has(state)) {
+      console.warn(`[OAuth] Invalid or expired state: ${state}`)
+      return c.redirect(`${frontendUrl}?qbo_error=invalid_state`)
+    }
+
+    const stateTimestamp = pendingStates.get(state)!
+    pendingStates.delete(state) // One-time use
+
+    if (Date.now() - stateTimestamp > STATE_TTL_MS) {
+      console.warn(`[OAuth] Expired state: ${state}`)
+      return c.redirect(`${frontendUrl}?qbo_error=invalid_state`)
+    }
+
+    if (!code || !realmId) {
+      console.warn('[OAuth] Missing code or realmId in callback')
+      return c.redirect(`${frontendUrl}?qbo_error=token_exchange_failed`)
+    }
+
+    // Exchange authorization code for tokens
+    const clientId = Deno.env.get('QBO_CLIENT_ID') ?? ''
+    const clientSecret = Deno.env.get('QBO_CLIENT_SECRET') ?? ''
+    const redirectUri = Deno.env.get('QBO_REDIRECT_URI') ?? ''
+
+    const credentials = btoa(`${clientId}:${clientSecret}`)
+
+    const tokenResponse = await fetch(
+      'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${credentials}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Accept: 'application/json',
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: code,
+          redirect_uri: redirectUri,
+        }).toString(),
+      }
+    )
+
+    if (!tokenResponse.ok) {
+      const errText = await tokenResponse.text()
+      console.error('[OAuth] Token exchange failed:', tokenResponse.status, errText)
+      return c.redirect(`${frontendUrl}?qbo_error=token_exchange_failed`)
+    }
+
+    const tokens = await tokenResponse.json()
+    const { access_token, refresh_token, expires_in } = tokens
+
+    // Store tokens in Vault using service_role client
+    const serviceClient = getServiceClient()
+
+    const { data: accessVaultId, error: accessVaultError } = await serviceClient.rpc(
+      'create_vault_secret',
+      { secret: access_token, name: 'qbo_access_token' }
+    )
+
+    if (accessVaultError) {
+      console.error('[OAuth] Failed to store access token in Vault:', accessVaultError)
+      return c.redirect(`${frontendUrl}?qbo_error=token_exchange_failed`)
+    }
+
+    const { data: refreshVaultId, error: refreshVaultError } = await serviceClient.rpc(
+      'create_vault_secret',
+      { secret: refresh_token, name: 'qbo_refresh_token' }
+    )
+
+    if (refreshVaultError) {
+      console.error('[OAuth] Failed to store refresh token in Vault:', refreshVaultError)
+      return c.redirect(`${frontendUrl}?qbo_error=token_exchange_failed`)
+    }
+
+    // Fetch company name from QBO (non-blocking — failure does not abort the flow)
+    let companyName: string | null = null
+    try {
+      const companyResponse = await qboFetch(
+        access_token,
+        `/v3/company/${realmId}/companyinfo/${realmId}`
+      )
+      if (companyResponse.ok) {
+        const companyData = await companyResponse.json()
+        companyName = companyData?.CompanyInfo?.CompanyName ?? null
+      } else {
+        console.warn('[OAuth] Company info fetch failed:', companyResponse.status)
+      }
+    } catch (err) {
+      console.warn('[OAuth] Company info fetch error (non-fatal):', err)
+    }
+
+    // Upsert connection record
+    const { error: upsertError } = await serviceClient.from('qbo_connection').upsert(
+      {
+        realm_id: realmId,
+        company_name: companyName,
+        token_vault_id: accessVaultId,
+        refresh_token_vault_id: refreshVaultId,
+        token_expires_at: new Date(Date.now() + expires_in * 1000).toISOString(),
+        token_issued_at: new Date().toISOString(),
+        is_active: true,
+      },
+      { onConflict: 'realm_id' }
+    )
+
+    if (upsertError) {
+      console.error('[OAuth] Failed to upsert qbo_connection:', upsertError)
+      return c.redirect(`${frontendUrl}?qbo_error=token_exchange_failed`)
+    }
+
+    console.log('[OAuth] Connected:', realmId, companyName)
+
+    return c.redirect(`${frontendUrl}?qbo_connected=true`)
+  } catch (err) {
+    console.error('[OAuth] Unexpected error in /auth/callback:', err)
+    return c.redirect(`${frontendUrl}?qbo_error=token_exchange_failed`)
+  }
+})
+
+// GET /connection/status
+// Return whether QBO is connected and the company name.
+// Safe for frontend consumption — never returns tokens.
+app.get('/connection/status', async (c) => {
+  try {
+    const serviceClient = getServiceClient()
+
+    const { data } = await serviceClient
+      .from('qbo_connection')
+      .select('company_name, is_active, connected_at')
+      .eq('is_active', true)
+      .single()
+
+    if (!data) {
+      return c.json({ connected: false, company_name: null })
+    }
+
+    return c.json({ connected: true, company_name: data.company_name ?? null })
+  } catch (err) {
+    console.error('[connection/status] Error:', err)
+    return c.json({ connected: false, company_name: null })
+  }
+})
 
 // ---------------------------------------------------------------------------
 // 7. Error handling
