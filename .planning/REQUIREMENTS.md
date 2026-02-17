@@ -126,7 +126,7 @@
 | REL-02 | Phase 6 | Pending |
 | REL-03 | Phase 6 | Pending |
 | REL-04 | Phase 4 | Pending |
-| REL-05 | Phase 7 | Pending |
+| REL-05 | Phase 6 | Pending |
 | REL-06 | Phase 1 | Pending |
 | INFRA-01 | Phase 1 | Pending |
 | INFRA-02 | Phase 1 | Pending |
@@ -141,4 +141,4 @@
 
 ---
 *Requirements defined: 2026-02-16*
-*Last updated: 2026-02-16 after initial definition*
+*Last updated: 2026-02-16 after roadmap creation*
