@@ -3,6 +3,11 @@
 // No Authorization header is sent for these endpoints.
 
 const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim()
+const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim()
+
+const authHeaders: HeadersInit = supabaseAnonKey
+  ? { Authorization: `Bearer ${supabaseAnonKey}` }
+  : {}
 
 export interface ConnectionStatus {
   connected: boolean
@@ -11,7 +16,8 @@ export interface ConnectionStatus {
 
 export async function getConnectionStatus(): Promise<ConnectionStatus> {
   const response = await fetch(
-    `${supabaseUrl}/functions/v1/qbo-api/connection/status`
+    `${supabaseUrl}/functions/v1/qbo-api/connection/status`,
+    { headers: authHeaders }
   )
   if (!response.ok) {
     console.error('[QBO] Failed to check connection status:', response.status)
@@ -22,7 +28,8 @@ export async function getConnectionStatus(): Promise<ConnectionStatus> {
 
 export async function startOAuthFlow(): Promise<void> {
   const response = await fetch(
-    `${supabaseUrl}/functions/v1/qbo-api/auth/start`
+    `${supabaseUrl}/functions/v1/qbo-api/auth/start`,
+    { headers: authHeaders }
   )
   if (!response.ok) {
     throw new Error('Failed to start OAuth flow')
