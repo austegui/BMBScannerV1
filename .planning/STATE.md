@@ -10,27 +10,27 @@ See: .planning/PROJECT.md (updated 2026-02-16)
 ## Current Position
 
 Phase: 1 of 6 (Foundation)
-Plan: 0 of 3 in current phase
-Status: Ready to plan
-Last activity: 2026-02-16 — Roadmap and STATE.md initialized
+Plan: 1 of 3 in current phase
+Status: In progress
+Last activity: 2026-02-17 — Completed 01-01-PLAN.md (CLI init + migrations)
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█░░░░░░░░░] ~6% (1/18 plans estimated)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
-- Average duration: -
-- Total execution time: -
+- Total plans completed: 1
+- Average duration: 3min
+- Total execution time: 3min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01-foundation | 1/3 | 3min | 3min |
 
 **Recent Trend:**
-- Last 5 plans: -
+- Last 5 plans: 01-01 (3min)
 - Trend: -
 
 *Updated after each plan completion*
@@ -47,13 +47,19 @@ Recent decisions affecting current work:
 - [Setup]: Entity resolution by name, not hardcoded IDs (prevents sandbox-to-production mismatch)
 - [Setup]: minorversion=75 required on all QBO API calls (mandatory as of August 2025)
 - [Setup]: RequestID (UUID v4) per transaction for idempotency on retry
+- [01-01]: update_vault_secret provisioned in Phase 1 for Phase 2 use; no Phase 1 caller expected
+- [01-01]: SECURITY DEFINER Vault wrapper functions (create/read/update) created in public schema for Edge Function .rpc() access
 
 ### Pending Todos
 
-None yet.
+- **REQUIRED before 01-02/01-03:** User must authenticate Supabase CLI and push migrations:
+  1. `npx supabase login` (opens browser)
+  2. `npx supabase link --project-ref <YOUR_PROJECT_REF>` (ref = subdomain of Supabase URL)
+  3. `npx supabase db push` (applies both migrations to hosted database)
 
 ### Blockers/Concerns
 
+- [Phase 1 - ACTIVE]: Supabase CLI auth gate — `supabase link` and `supabase db push` require user to run `npx supabase login` interactively. Migration files are ready but NOT yet applied to database.
 - [Phase 1]: Race-condition-safe token refresh requires Supabase `SELECT FOR UPDATE` locking — verify transaction syntax during Phase 2 build
 - [Phase 3]: Fuzzy vendor matching threshold needs testing against BMB's actual vendor list
 - [Phase 4]: QBO Purchase entity JSON structure for single-line receipts needs sandbox verification
@@ -61,6 +67,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-02-16
-Stopped at: Roadmap created, ready to begin Phase 1 planning
+Last session: 2026-02-17T14:49:57Z
+Stopped at: Completed 01-01-PLAN.md — CLI init, Edge Function scaffold, migration files created
 Resume file: None
