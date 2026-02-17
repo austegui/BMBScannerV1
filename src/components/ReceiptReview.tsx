@@ -2,48 +2,29 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { ReceiptData } from '../types/receipt';
-import { useState } from 'react';
-
-// QuickBooks expense categories
-const CATEGORIES = [
-  'Advertising & Marketing',
-  'Auto & Transport',
-  'Bank Charges & Fees',
-  'Computer & Internet',
-  'Contractors',
-  'Education & Training',
-  'Equipment',
-  'Insurance',
-  'Interest',
-  'Legal & Professional',
-  'Meals & Entertainment',
-  'Office Supplies',
-  'Other Expenses',
-  'Rent & Lease',
-  'Repairs & Maintenance',
-  'Shipping & Delivery',
-  'Taxes & Licenses',
-  'Travel',
-  'Utilities',
-] as const;
-
-// Payment methods
-const PAYMENT_METHODS = [
-  'Cash',
-  'Credit Card',
-  'Debit Card',
-  'Check',
-  'Bank Transfer',
-  'Other',
-] as const;
+import { useState, useEffect, useMemo } from 'react';
+import {
+  getQboAccounts,
+  getQboClasses,
+  getQboVendors,
+  getConnectionStatus,
+  QboAccount,
+  QboClass,
+  QboVendor,
+} from '../services/qboService';
 
 // Zod schema for QuickBooks expense form
 const expenseSchema = z.object({
   vendor: z.string().min(1, 'Vendor name required'),
+  vendorId: z.string().nullable(),
   date: z.string().min(1, 'Date required'),
   amount: z.number().min(0.01, 'Amount required'),
   category: z.string().min(1, 'Category required'),
-  paymentMethod: z.string().min(1, 'Payment method required'),
+  categoryId: z.string().min(1, 'Category required'),
+  paymentAccount: z.string().min(1, 'Payment account required'),
+  paymentAccountId: z.string().min(1, 'Payment account required'),
+  classId: z.string().nullable(),
+  className: z.string().nullable(),
   tax: z.number().min(0).nullable(),
   memo: z.string().optional(),
 });
@@ -58,9 +39,109 @@ interface ReceiptReviewProps {
   onBack: () => void;
 }
 
+/**
+ * Normalize a string for fuzzy matching: lowercase, strip punctuation and numbers.
+ */
+function normalize(s: string): string {
+  return s.toLowerCase().replace(/[^a-z\s]/g, '').trim();
+}
+
+/**
+ * Score how well an OCR merchant name matches a QBO vendor name.
+ * Higher score = better match.
+ */
+function vendorMatchScore(ocrName: string, vendorName: string): number {
+  const a = normalize(ocrName);
+  const b = normalize(vendorName);
+  if (!a || !b) return 0;
+  if (a === b) return 100;
+  if (a.includes(b)) return 50 + b.length;
+  if (b.includes(a)) return 50 + a.length;
+  // Check word overlap
+  const aWords = a.split(/\s+/);
+  const bWords = b.split(/\s+/);
+  let overlap = 0;
+  for (const w of aWords) {
+    if (w.length > 1 && bWords.some((bw) => bw.includes(w) || w.includes(bw))) {
+      overlap += w.length;
+    }
+  }
+  return overlap;
+}
+
 export function ReceiptReview({ initialData, previewUrl, ocrText, onConfirm, onBack }: ReceiptReviewProps) {
   const [showFullImage, setShowFullImage] = useState(false);
   const [showOcrText, setShowOcrText] = useState(false);
+  const [isNewVendor, setIsNewVendor] = useState(false);
+
+  // QBO entity state
+  const [accounts, setAccounts] = useState<QboAccount[]>([]);
+  const [classes, setClasses] = useState<QboClass[]>([]);
+  const [vendors, setVendors] = useState<QboVendor[]>([]);
+  const [entitiesLoading, setEntitiesLoading] = useState(true);
+  const [qboConnected, setQboConnected] = useState<boolean | null>(null);
+
+  // Separate accounts by type
+  const expenseAccounts = useMemo(
+    () => accounts.filter((a) => a.account_type === 'Expense'),
+    [accounts]
+  );
+  const creditCardAccounts = useMemo(
+    () => accounts.filter((a) => a.account_type === 'Credit Card'),
+    [accounts]
+  );
+
+  // Sort vendors by match score against OCR merchant name
+  const sortedVendors = useMemo(() => {
+    const ocrName = initialData.merchantName ?? '';
+    if (!ocrName) return vendors;
+    return [...vendors].sort(
+      (a, b) => vendorMatchScore(ocrName, b.display_name) - vendorMatchScore(ocrName, a.display_name)
+    );
+  }, [vendors, initialData.merchantName]);
+
+  // Best matching vendor
+  const bestVendorMatch = useMemo(() => {
+    const ocrName = initialData.merchantName ?? '';
+    if (!ocrName || sortedVendors.length === 0) return null;
+    const score = vendorMatchScore(ocrName, sortedVendors[0].display_name);
+    return score > 5 ? sortedVendors[0] : null;
+  }, [sortedVendors, initialData.merchantName]);
+
+  // Fetch QBO entities on mount
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadEntities() {
+      setEntitiesLoading(true);
+
+      // Check connection first
+      const status = await getConnectionStatus();
+      if (cancelled) return;
+      setQboConnected(status.connected);
+
+      if (!status.connected) {
+        setEntitiesLoading(false);
+        return;
+      }
+
+      // Fetch all entities in parallel
+      const [accts, cls, vndrs] = await Promise.all([
+        getQboAccounts(),
+        getQboClasses(),
+        getQboVendors(),
+      ]);
+
+      if (cancelled) return;
+      setAccounts(accts);
+      setClasses(cls);
+      setVendors(vndrs);
+      setEntitiesLoading(false);
+    }
+
+    loadEntities();
+    return () => { cancelled = true; };
+  }, []);
 
   // Format date for input (YYYY-MM-DD)
   const formatDateForInput = (date: Date | null): string => {
@@ -70,11 +151,16 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, onConfirm, onB
 
   // Convert initialData to form-compatible format
   const defaultValues: ExpenseFormData = {
-    vendor: initialData.merchantName || '',
+    vendor: bestVendorMatch?.display_name ?? initialData.merchantName ?? '',
+    vendorId: bestVendorMatch?.qbo_id ?? null,
     date: formatDateForInput(initialData.date),
     amount: initialData.total ?? 0,
     category: '',
-    paymentMethod: '',
+    categoryId: '',
+    paymentAccount: '',
+    paymentAccountId: '',
+    classId: null,
+    className: null,
     tax: initialData.tax ?? null,
     memo: '',
   };
@@ -82,26 +168,99 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, onConfirm, onB
   const {
     register,
     handleSubmit,
+    setValue,
+    watch,
     formState: { errors },
   } = useForm<ExpenseFormData>({
     resolver: zodResolver(expenseSchema),
     defaultValues,
   });
 
+  // When entities finish loading and we have a best vendor match, pre-select it
+  useEffect(() => {
+    if (!entitiesLoading && bestVendorMatch) {
+      setValue('vendor', bestVendorMatch.display_name);
+      setValue('vendorId', bestVendorMatch.qbo_id);
+    }
+  }, [entitiesLoading, bestVendorMatch, setValue]);
+
+  const watchedVendorId = watch('vendorId');
+
   const onSubmit = (data: ExpenseFormData) => {
-    // Convert back to ReceiptData format for compatibility
-    const receiptData: ReceiptData = {
+    // Convert back to ReceiptData format with QBO fields for CameraCapture
+    const receiptData: ReceiptData & {
+      category: string;
+      categoryId: string;
+      paymentAccount: string;
+      paymentAccountId: string;
+      classId: string | null;
+      className: string | null;
+      vendorId: string | null;
+      memo?: string;
+    } = {
       merchantName: data.vendor,
       date: new Date(data.date),
       total: data.amount,
       tax: data.tax,
       lineItems: [],
-      // Store QuickBooks-specific fields in a way that can be used later
       category: data.category,
-      paymentMethod: data.paymentMethod,
+      categoryId: data.categoryId,
+      paymentAccount: data.paymentAccount,
+      paymentAccountId: data.paymentAccountId,
+      classId: data.classId,
+      className: data.className,
+      vendorId: data.vendorId,
       memo: data.memo,
-    } as ReceiptData & { category: string; paymentMethod: string; memo?: string };
+    };
     onConfirm(receiptData);
+  };
+
+  const handleCategoryChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const qboId = e.target.value;
+    const acct = expenseAccounts.find((a) => a.qbo_id === qboId);
+    if (acct) {
+      setValue('categoryId', acct.qbo_id);
+      setValue('category', acct.name);
+    }
+  };
+
+  const handlePaymentAccountChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const qboId = e.target.value;
+    const acct = creditCardAccounts.find((a) => a.qbo_id === qboId);
+    if (acct) {
+      setValue('paymentAccountId', acct.qbo_id);
+      setValue('paymentAccount', acct.name);
+    }
+  };
+
+  const handleClassChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const qboId = e.target.value;
+    if (!qboId) {
+      setValue('classId', null);
+      setValue('className', null);
+    } else {
+      const cls = classes.find((c) => c.qbo_id === qboId);
+      if (cls) {
+        setValue('classId', cls.qbo_id);
+        setValue('className', cls.name);
+      }
+    }
+  };
+
+  const handleVendorSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    if (val === '__new__') {
+      setIsNewVendor(true);
+      setValue('vendorId', null);
+      setValue('vendor', '');
+    } else {
+      setIsNewVendor(false);
+      const v = vendors.find((vn) => vn.qbo_id === val);
+      if (v) {
+        setValue('vendorId', v.qbo_id);
+        setValue('vendor', v.display_name);
+      }
+    }
   };
 
   const inputStyle = {
@@ -129,6 +288,68 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, onConfirm, onB
   const fieldStyle = {
     marginBottom: '1rem',
   };
+
+  const selectStyle = {
+    ...inputStyle,
+    appearance: 'none' as const,
+    backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
+    backgroundPosition: 'right 0.5rem center',
+    backgroundRepeat: 'no-repeat',
+    backgroundSize: '1.5em 1.5em',
+  };
+
+  const selectErrorStyle = {
+    ...selectStyle,
+    border: '1px solid #ef4444',
+  };
+
+  // Not connected to QBO
+  if (qboConnected === false) {
+    return (
+      <div style={{ padding: '2rem', textAlign: 'center' }}>
+        <p style={{ fontSize: '1.125rem', color: '#374151', marginBottom: '1rem' }}>
+          Connect to QuickBooks first
+        </p>
+        <p style={{ color: '#6b7280', marginBottom: '1.5rem' }}>
+          Go to Settings and connect your QuickBooks Online account to use the expense form.
+        </p>
+        <button
+          type="button"
+          onClick={onBack}
+          style={{
+            padding: '0.75rem 1.5rem',
+            fontSize: '1rem',
+            backgroundColor: '#f3f4f6',
+            color: '#374151',
+            border: '1px solid #d1d5db',
+            borderRadius: '8px',
+            cursor: 'pointer',
+          }}
+        >
+          Back
+        </button>
+      </div>
+    );
+  }
+
+  // Loading skeleton
+  if (entitiesLoading || qboConnected === null) {
+    return (
+      <div style={{ padding: '2rem', textAlign: 'center' }}>
+        <div style={{ fontSize: '2rem', marginBottom: '1rem' }}>Loading QBO data...</div>
+        <div style={{
+          width: '40px',
+          height: '40px',
+          border: '4px solid #e5e7eb',
+          borderTopColor: '#2563eb',
+          borderRadius: '50%',
+          margin: '0 auto',
+          animation: 'spin 1s linear infinite',
+        }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: '1rem', maxWidth: '500px', margin: '0 auto' }}>
@@ -177,8 +398,8 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, onConfirm, onB
               alignItems: 'center',
             }}
           >
-            <span>📝 OCR Text (tap to {showOcrText ? 'hide' : 'view'})</span>
-            <span>{showOcrText ? '▲' : '▼'}</span>
+            <span>OCR Text (tap to {showOcrText ? 'hide' : 'view'})</span>
+            <span>{showOcrText ? '^' : 'v'}</span>
           </button>
           {showOcrText && (
             <div style={{
@@ -240,16 +461,59 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, onConfirm, onB
       <form onSubmit={handleSubmit(onSubmit)}>
         {/* Vendor/Payee */}
         <div style={fieldStyle}>
-          <label htmlFor="vendor" style={labelStyle}>
+          <label htmlFor="vendorSelect" style={labelStyle}>
             Vendor / Payee *
           </label>
-          <input
-            id="vendor"
-            type="text"
-            {...register('vendor')}
-            placeholder="e.g., Home Depot"
-            style={errors.vendor ? inputErrorStyle : inputStyle}
-          />
+          {!isNewVendor ? (
+            <>
+              <select
+                id="vendorSelect"
+                value={watchedVendorId ?? ''}
+                onChange={handleVendorSelectChange}
+                style={errors.vendor ? selectErrorStyle : selectStyle}
+              >
+                <option value="">Select vendor...</option>
+                {sortedVendors.map((v) => (
+                  <option key={v.qbo_id} value={v.qbo_id}>
+                    {v.display_name}
+                  </option>
+                ))}
+                <option value="__new__">-- New Vendor --</option>
+              </select>
+              {/* Hidden inputs for form validation */}
+              <input type="hidden" {...register('vendor')} />
+              <input type="hidden" {...register('vendorId')} />
+            </>
+          ) : (
+            <>
+              <input
+                id="vendor"
+                type="text"
+                {...register('vendor')}
+                placeholder="Enter new vendor name"
+                style={errors.vendor ? inputErrorStyle : inputStyle}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setIsNewVendor(false);
+                  setValue('vendor', '');
+                  setValue('vendorId', null);
+                }}
+                style={{
+                  marginTop: '0.25rem',
+                  fontSize: '0.75rem',
+                  color: '#2563eb',
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
+                Back to vendor list
+              </button>
+            </>
+          )}
           {errors.vendor && (
             <p style={{ fontSize: '0.75rem', color: '#ef4444', marginTop: '0.25rem' }}>
               {errors.vendor.message}
@@ -310,67 +574,80 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, onConfirm, onB
           )}
         </div>
 
-        {/* Category */}
+        {/* Category (Expense Accounts) */}
         <div style={fieldStyle}>
-          <label htmlFor="category" style={labelStyle}>
+          <label htmlFor="categorySelect" style={labelStyle}>
             Category *
           </label>
           <select
-            id="category"
-            {...register('category')}
-            style={{
-              ...(errors.category ? inputErrorStyle : inputStyle),
-              appearance: 'none',
-              backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
-              backgroundPosition: 'right 0.5rem center',
-              backgroundRepeat: 'no-repeat',
-              backgroundSize: '1.5em 1.5em',
-            }}
+            id="categorySelect"
+            onChange={handleCategoryChange}
+            style={errors.categoryId ? selectErrorStyle : selectStyle}
           >
             <option value="">Select category...</option>
-            {CATEGORIES.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
+            {expenseAccounts.map((acct) => (
+              <option key={acct.qbo_id} value={acct.qbo_id}>
+                {acct.fully_qualified_name || acct.name}
               </option>
             ))}
           </select>
-          {errors.category && (
+          <input type="hidden" {...register('category')} />
+          <input type="hidden" {...register('categoryId')} />
+          {(errors.category || errors.categoryId) && (
             <p style={{ fontSize: '0.75rem', color: '#ef4444', marginTop: '0.25rem' }}>
-              {errors.category.message}
+              Category required
             </p>
           )}
         </div>
 
-        {/* Payment Method */}
+        {/* Payment Account (Credit Card Accounts) */}
         <div style={fieldStyle}>
-          <label htmlFor="paymentMethod" style={labelStyle}>
-            Payment Method *
+          <label htmlFor="paymentAccountSelect" style={labelStyle}>
+            Payment Account *
           </label>
           <select
-            id="paymentMethod"
-            {...register('paymentMethod')}
-            style={{
-              ...(errors.paymentMethod ? inputErrorStyle : inputStyle),
-              appearance: 'none',
-              backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
-              backgroundPosition: 'right 0.5rem center',
-              backgroundRepeat: 'no-repeat',
-              backgroundSize: '1.5em 1.5em',
-            }}
+            id="paymentAccountSelect"
+            onChange={handlePaymentAccountChange}
+            style={errors.paymentAccountId ? selectErrorStyle : selectStyle}
           >
-            <option value="">Select payment method...</option>
-            {PAYMENT_METHODS.map((method) => (
-              <option key={method} value={method}>
-                {method}
+            <option value="">Select payment account...</option>
+            {creditCardAccounts.map((acct) => (
+              <option key={acct.qbo_id} value={acct.qbo_id}>
+                {acct.fully_qualified_name || acct.name}
               </option>
             ))}
           </select>
-          {errors.paymentMethod && (
+          <input type="hidden" {...register('paymentAccount')} />
+          <input type="hidden" {...register('paymentAccountId')} />
+          {(errors.paymentAccount || errors.paymentAccountId) && (
             <p style={{ fontSize: '0.75rem', color: '#ef4444', marginTop: '0.25rem' }}>
-              {errors.paymentMethod.message}
+              Payment account required
             </p>
           )}
         </div>
+
+        {/* Class (optional) */}
+        {classes.length > 0 && (
+          <div style={fieldStyle}>
+            <label htmlFor="classSelect" style={labelStyle}>
+              Class (optional)
+            </label>
+            <select
+              id="classSelect"
+              onChange={handleClassChange}
+              style={selectStyle}
+            >
+              <option value="">No class</option>
+              {classes.map((cls) => (
+                <option key={cls.qbo_id} value={cls.qbo_id}>
+                  {cls.fully_qualified_name || cls.name}
+                </option>
+              ))}
+            </select>
+            <input type="hidden" {...register('classId')} />
+            <input type="hidden" {...register('className')} />
+          </div>
+        )}
 
         {/* Tax (optional) */}
         <div style={fieldStyle}>

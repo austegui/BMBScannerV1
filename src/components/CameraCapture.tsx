@@ -11,8 +11,15 @@ import { saveExpense, uploadReceiptImage } from '../services/supabase';
 // Extended type for QuickBooks data from the form
 interface ExpenseData extends ReceiptData {
   category?: string;
-  paymentMethod?: string;
+  categoryId?: string;
+  paymentAccount?: string;
+  paymentAccountId?: string;
+  classId?: string | null;
+  className?: string | null;
+  vendorId?: string | null;
   memo?: string;
+  // Legacy field kept for compatibility
+  paymentMethod?: string;
 }
 
 interface CameraCaptureProps {
@@ -171,10 +178,15 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
         date: expenseData.date?.toISOString().split('T')[0] || new Date().toISOString().split('T')[0],
         amount: expenseData.total || 0,
         category: expenseData.category || 'Other Expenses',
-        payment_method: expenseData.paymentMethod || 'Other',
+        payment_method: expenseData.paymentAccount || expenseData.paymentMethod || 'Other',
         tax: expenseData.tax || null,
         memo: expenseData.memo || null,
         image_url: imageUrl,
+        qbo_vendor_id: expenseData.vendorId ?? null,
+        qbo_account_id: expenseData.categoryId ?? null,
+        qbo_account_name: expenseData.category ?? null,
+        qbo_payment_account_id: expenseData.paymentAccountId ?? null,
+        qbo_class_id: expenseData.classId ?? null,
       });
 
       console.log('[CameraCapture] Expense saved successfully!');

@@ -32,6 +32,11 @@ export interface Expense {
   memo: string | null;
   image_url: string | null;
   created_at?: string;
+  qbo_vendor_id: string | null;
+  qbo_account_id: string | null;
+  qbo_account_name: string | null;
+  qbo_payment_account_id: string | null;
+  qbo_class_id: string | null;
 }
 
 /**

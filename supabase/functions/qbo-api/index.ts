@@ -49,7 +49,11 @@ app.use(
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const JWKS_URL = `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`
 
-const AUTH_EXCLUDED_SUFFIXES = ['/auth/callback', '/auth/start', '/connection/status']
+const AUTH_EXCLUDED_SUFFIXES = [
+  '/auth/callback', '/auth/start', '/connection/status', '/connection/disconnect',
+  '/entities/accounts', '/entities/classes', '/entities/vendors',
+  '/entities/vendors/find-or-create', '/entities/refresh',
+]
 
 app.use('*', async (c, next) => {
   const path = c.req.path
@@ -148,7 +152,166 @@ async function qboFetch(
 }
 
 // ---------------------------------------------------------------------------
-// 6. Routes
+// 6. Token refresh helper (Phase 2)
+// ---------------------------------------------------------------------------
+
+const INTUIT_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer'
+
+interface ActiveConnection {
+  id: string
+  realm_id: string
+  access_token: string
+  refresh_token: string
+  token_expires_at: string
+  refresh_token_expires_at: string
+}
+
+async function getActiveConnection(): Promise<ActiveConnection | null> {
+  const { data, error } = await getServiceClient()
+    .from('qbo_connection')
+    .select('id, realm_id, access_token, refresh_token, token_expires_at, refresh_token_expires_at')
+    .eq('is_active', true)
+    .single()
+
+  if (error || !data) {
+    console.warn('[TokenRefresh] No active QBO connection found')
+    return null
+  }
+  return data as ActiveConnection
+}
+
+async function refreshTokensFromIntuit(
+  refreshToken: string
+): Promise<{ access_token: string; refresh_token: string; expires_in: number } | null> {
+  const clientId = Deno.env.get('QBO_CLIENT_ID') ?? ''
+  const clientSecret = Deno.env.get('QBO_CLIENT_SECRET') ?? ''
+  const credentials = btoa(`${clientId}:${clientSecret}`)
+
+  console.log('[TokenRefresh] Calling Intuit token endpoint...')
+
+  const response = await fetch(INTUIT_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${credentials}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    }).toString(),
+  })
+
+  if (!response.ok) {
+    const errText = await response.text()
+    console.error('[TokenRefresh] Intuit refresh failed:', response.status, errText)
+    // invalid_grant means the refresh token was already rotated by another invocation
+    if (errText.includes('invalid_grant')) {
+      console.warn('[TokenRefresh] invalid_grant — another invocation likely refreshed first')
+      return null
+    }
+    throw new Error(`Token refresh failed: ${response.status}`)
+  }
+
+  return response.json()
+}
+
+/**
+ * Get a valid access token, refreshing if needed.
+ * Uses CAS (Compare-And-Swap) to safely handle concurrent refresh attempts.
+ *
+ * @param forceRefresh - If true, skip expiry check and always refresh (used on 401 retry)
+ */
+async function getValidAccessToken(
+  forceRefresh = false
+): Promise<{ accessToken: string; realmId: string }> {
+  const conn = await getActiveConnection()
+  if (!conn) {
+    throw new Error('No active QBO connection')
+  }
+
+  const expiresAt = new Date(conn.token_expires_at).getTime()
+  const fiveMinutesFromNow = Date.now() + 5 * 60 * 1000
+
+  // If token is still valid (>5 min remaining) and not force-refreshing, return it
+  if (!forceRefresh && expiresAt > fiveMinutesFromNow) {
+    return { accessToken: conn.access_token, realmId: conn.realm_id }
+  }
+
+  console.log(`[TokenRefresh] Token ${forceRefresh ? 'force-refresh requested' : 'expired or expiring soon'}, refreshing...`)
+
+  const tokens = await refreshTokensFromIntuit(conn.refresh_token)
+
+  if (!tokens) {
+    // invalid_grant — another invocation already refreshed. Re-read DB for the winner's token.
+    console.log('[TokenRefresh] Re-reading DB for fresh token (race loser fallback)...')
+    const freshConn = await getActiveConnection()
+    if (!freshConn) throw new Error('No active QBO connection after refresh race')
+    return { accessToken: freshConn.access_token, realmId: freshConn.realm_id }
+  }
+
+  // CAS update: only update if token_expires_at hasn't changed (we're the first writer)
+  const newExpiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+  const { data: updated, error: updateError } = await getServiceClient()
+    .from('qbo_connection')
+    .update({
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      token_expires_at: newExpiresAt,
+      token_issued_at: new Date().toISOString(),
+    })
+    .eq('id', conn.id)
+    .eq('token_expires_at', conn.token_expires_at) // CAS condition
+    .select('access_token')
+
+  if (updateError) {
+    console.error('[TokenRefresh] DB update error:', updateError)
+    throw new Error('Failed to store refreshed tokens')
+  }
+
+  if (!updated || updated.length === 0) {
+    // CAS miss — another invocation updated first. Re-read the winner's token.
+    console.log('[TokenRefresh] CAS miss — re-reading DB for winner token...')
+    const freshConn = await getActiveConnection()
+    if (!freshConn) throw new Error('No active QBO connection after CAS miss')
+    return { accessToken: freshConn.access_token, realmId: freshConn.realm_id }
+  }
+
+  console.log('[TokenRefresh] Tokens refreshed and stored successfully')
+  return { accessToken: tokens.access_token, realmId: conn.realm_id }
+}
+
+// ---------------------------------------------------------------------------
+// 7. Authenticated QBO fetch wrapper (Phase 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * High-level wrapper for QBO API calls. Gets a valid token, calls qboFetch,
+ * and retries once on 401 with a force-refreshed token.
+ *
+ * Use `{realmId}` placeholder in path — it's replaced automatically.
+ * This is the standard way all future phases should call QBO APIs.
+ */
+async function authenticatedQboFetch(
+  path: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const { accessToken, realmId } = await getValidAccessToken()
+  const resolvedPath = path.replace(/\{realmId\}/g, realmId)
+
+  const response = await qboFetch(accessToken, resolvedPath, options)
+
+  if (response.status === 401) {
+    console.warn('[authenticatedQboFetch] Got 401, force-refreshing token and retrying...')
+    const { accessToken: freshToken } = await getValidAccessToken(true)
+    return qboFetch(freshToken, resolvedPath, options)
+  }
+
+  return response
+}
+
+// ---------------------------------------------------------------------------
+// 8. Routes
 // ---------------------------------------------------------------------------
 
 // Health check
@@ -302,14 +465,16 @@ app.get('/auth/callback', async (c) => {
     }
 
     // Upsert connection record (tokens stored directly, protected by deny-all RLS)
+    const now = new Date()
     const { error: upsertError } = await serviceClient.from('qbo_connection').upsert(
       {
         realm_id: realmId,
         company_name: companyName,
         access_token: access_token,
         refresh_token: refresh_token,
-        token_expires_at: new Date(Date.now() + expires_in * 1000).toISOString(),
-        token_issued_at: new Date().toISOString(),
+        token_expires_at: new Date(now.getTime() + expires_in * 1000).toISOString(),
+        token_issued_at: now.toISOString(),
+        refresh_token_expires_at: new Date(now.getTime() + 5 * 365 * 24 * 60 * 60 * 1000).toISOString(),
         is_active: true,
       },
       { onConflict: 'realm_id' }
@@ -330,7 +495,7 @@ app.get('/auth/callback', async (c) => {
 })
 
 // GET /connection/status
-// Return whether QBO is connected and the company name.
+// Return whether QBO is connected, company name, and token health info.
 // Safe for frontend consumption — never returns tokens.
 app.get('/connection/status', async (c) => {
   try {
@@ -338,18 +503,482 @@ app.get('/connection/status', async (c) => {
 
     const { data } = await serviceClient
       .from('qbo_connection')
-      .select('company_name, is_active, connected_at')
+      .select('company_name, is_active, connected_at, refresh_token_expires_at')
       .eq('is_active', true)
       .single()
 
     if (!data) {
-      return c.json({ connected: false, company_name: null })
+      return c.json({
+        connected: false,
+        company_name: null,
+        token_healthy: false,
+        refresh_token_warning: false,
+        refresh_token_expires_at: null,
+      })
     }
 
-    return c.json({ connected: true, company_name: data.company_name ?? null })
+    const refreshExpiresAt = data.refresh_token_expires_at
+      ? new Date(data.refresh_token_expires_at).getTime()
+      : null
+    const ninetyDaysFromNow = Date.now() + 90 * 24 * 60 * 60 * 1000
+
+    return c.json({
+      connected: true,
+      company_name: data.company_name ?? null,
+      token_healthy: refreshExpiresAt ? refreshExpiresAt > ninetyDaysFromNow : false,
+      refresh_token_warning: refreshExpiresAt ? refreshExpiresAt <= ninetyDaysFromNow : false,
+      refresh_token_expires_at: data.refresh_token_expires_at ?? null,
+    })
   } catch (err) {
     console.error('[connection/status] Error:', err)
-    return c.json({ connected: false, company_name: null })
+    return c.json({
+      connected: false,
+      company_name: null,
+      token_healthy: false,
+      refresh_token_warning: false,
+      refresh_token_expires_at: null,
+    })
+  }
+})
+
+// POST /connection/disconnect
+// Deactivate the QBO connection and clear token values.
+app.post('/connection/disconnect', async (c) => {
+  try {
+    const serviceClient = getServiceClient()
+
+    const { error } = await serviceClient
+      .from('qbo_connection')
+      .update({
+        is_active: false,
+        access_token: '',
+        refresh_token: '',
+      })
+      .eq('is_active', true)
+
+    if (error) {
+      console.error('[disconnect] Error:', error)
+      return c.json({ error: 'Failed to disconnect' }, 500)
+    }
+
+    console.log('[disconnect] QBO connection deactivated')
+    return c.json({ disconnected: true })
+  } catch (err) {
+    console.error('[disconnect] Unexpected error:', err)
+    return c.json({ error: 'Failed to disconnect' }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Entity Sync (Phase 3)
+// ---------------------------------------------------------------------------
+
+const ENTITY_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
+
+type EntityType = 'accounts' | 'classes' | 'vendors'
+
+const ENTITY_TABLE_MAP: Record<EntityType, string> = {
+  accounts: 'qbo_entity_accounts',
+  classes: 'qbo_entity_classes',
+  vendors: 'qbo_entity_vendors',
+}
+
+/**
+ * Check if cached data is fresh (within TTL).
+ * Returns cached rows if fresh, null if stale/empty.
+ */
+async function getCachedEntities(
+  entityType: EntityType,
+  realmId: string,
+  forceRefresh: boolean
+): Promise<Record<string, unknown>[] | null> {
+  if (forceRefresh) return null
+
+  const table = ENTITY_TABLE_MAP[entityType]
+  const client = getServiceClient()
+
+  // Check most recent synced_at for this realm
+  const { data: latest } = await client
+    .from(table)
+    .select('synced_at')
+    .eq('realm_id', realmId)
+    .eq('is_active', true)
+    .order('synced_at', { ascending: false })
+    .limit(1)
+    .single()
+
+  if (!latest) return null
+
+  const age = Date.now() - new Date(latest.synced_at).getTime()
+  if (age > ENTITY_TTL_MS) return null
+
+  // Cache is fresh — return all active rows
+  const { data } = await client
+    .from(table)
+    .select('*')
+    .eq('realm_id', realmId)
+    .eq('is_active', true)
+    .order('name' in (latest ?? {}) ? 'name' : 'display_name', { ascending: true })
+
+  return data ?? null
+}
+
+/**
+ * Sync accounts (Expense + Credit Card) from QBO into cache.
+ */
+async function syncAccounts(realmId: string, forceRefresh = false) {
+  const cached = await getCachedEntities('accounts', realmId, forceRefresh)
+  if (cached) {
+    console.log(`[EntitySync] Accounts cache hit for realm ${realmId} (${cached.length} rows)`)
+    return cached
+  }
+
+  console.log(`[EntitySync] Fetching accounts from QBO for realm ${realmId}...`)
+  const query = encodeURIComponent(
+    "SELECT * FROM Account WHERE AccountType IN ('Expense', 'Credit Card') AND Active = true"
+  )
+  const resp = await authenticatedQboFetch(`/v3/company/{realmId}/query?query=${query}`)
+  if (!resp.ok) {
+    const errText = await resp.text()
+    console.error('[EntitySync] QBO account query failed:', resp.status, errText)
+    throw new Error(`QBO account query failed: ${resp.status}`)
+  }
+
+  const body = await resp.json()
+  const accounts = body?.QueryResponse?.Account ?? []
+
+  const client = getServiceClient()
+  const now = new Date().toISOString()
+
+  if (accounts.length > 0) {
+    const rows = accounts.map((a: Record<string, unknown>) => ({
+      realm_id: realmId,
+      qbo_id: String(a.Id),
+      name: a.Name as string,
+      fully_qualified_name: (a.FullyQualifiedName as string) ?? (a.Name as string),
+      account_type: a.AccountType as string,
+      account_sub_type: (a.AccountSubType as string) ?? null,
+      is_active: true,
+      synced_at: now,
+    }))
+
+    const { error } = await client
+      .from('qbo_entity_accounts')
+      .upsert(rows, { onConflict: 'realm_id,qbo_id' })
+
+    if (error) console.error('[EntitySync] Account upsert error:', error)
+  }
+
+  // Return fresh data from DB
+  const { data } = await client
+    .from('qbo_entity_accounts')
+    .select('*')
+    .eq('realm_id', realmId)
+    .eq('is_active', true)
+    .order('name', { ascending: true })
+
+  console.log(`[EntitySync] Synced ${accounts.length} accounts, returning ${data?.length ?? 0}`)
+  return data ?? []
+}
+
+/**
+ * Sync classes from QBO into cache.
+ */
+async function syncClasses(realmId: string, forceRefresh = false) {
+  const cached = await getCachedEntities('classes', realmId, forceRefresh)
+  if (cached) {
+    console.log(`[EntitySync] Classes cache hit for realm ${realmId} (${cached.length} rows)`)
+    return cached
+  }
+
+  console.log(`[EntitySync] Fetching classes from QBO for realm ${realmId}...`)
+  const query = encodeURIComponent("SELECT * FROM Class WHERE Active = true")
+  const resp = await authenticatedQboFetch(`/v3/company/{realmId}/query?query=${query}`)
+  if (!resp.ok) {
+    const errText = await resp.text()
+    console.error('[EntitySync] QBO class query failed:', resp.status, errText)
+    throw new Error(`QBO class query failed: ${resp.status}`)
+  }
+
+  const body = await resp.json()
+  const classes = body?.QueryResponse?.Class ?? []
+
+  const client = getServiceClient()
+  const now = new Date().toISOString()
+
+  if (classes.length > 0) {
+    const rows = classes.map((cl: Record<string, unknown>) => ({
+      realm_id: realmId,
+      qbo_id: String(cl.Id),
+      name: cl.Name as string,
+      fully_qualified_name: (cl.FullyQualifiedName as string) ?? (cl.Name as string),
+      is_active: true,
+      synced_at: now,
+    }))
+
+    const { error } = await client
+      .from('qbo_entity_classes')
+      .upsert(rows, { onConflict: 'realm_id,qbo_id' })
+
+    if (error) console.error('[EntitySync] Class upsert error:', error)
+  }
+
+  const { data } = await client
+    .from('qbo_entity_classes')
+    .select('*')
+    .eq('realm_id', realmId)
+    .eq('is_active', true)
+    .order('name', { ascending: true })
+
+  console.log(`[EntitySync] Synced ${classes.length} classes, returning ${data?.length ?? 0}`)
+  return data ?? []
+}
+
+/**
+ * Sync vendors from QBO into cache.
+ */
+async function syncVendors(realmId: string, forceRefresh = false) {
+  const cached = await getCachedEntities('vendors', realmId, forceRefresh)
+  if (cached) {
+    console.log(`[EntitySync] Vendors cache hit for realm ${realmId} (${cached.length} rows)`)
+    return cached
+  }
+
+  console.log(`[EntitySync] Fetching vendors from QBO for realm ${realmId}...`)
+  const query = encodeURIComponent(
+    "SELECT * FROM Vendor WHERE Active = true ORDERBY DisplayName"
+  )
+  const resp = await authenticatedQboFetch(`/v3/company/{realmId}/query?query=${query}`)
+  if (!resp.ok) {
+    const errText = await resp.text()
+    console.error('[EntitySync] QBO vendor query failed:', resp.status, errText)
+    throw new Error(`QBO vendor query failed: ${resp.status}`)
+  }
+
+  const body = await resp.json()
+  const vendors = body?.QueryResponse?.Vendor ?? []
+
+  const client = getServiceClient()
+  const now = new Date().toISOString()
+
+  if (vendors.length > 0) {
+    const rows = vendors.map((v: Record<string, unknown>) => ({
+      realm_id: realmId,
+      qbo_id: String(v.Id),
+      display_name: v.DisplayName as string,
+      is_active: true,
+      synced_at: now,
+    }))
+
+    const { error } = await client
+      .from('qbo_entity_vendors')
+      .upsert(rows, { onConflict: 'realm_id,qbo_id' })
+
+    if (error) console.error('[EntitySync] Vendor upsert error:', error)
+  }
+
+  const { data } = await client
+    .from('qbo_entity_vendors')
+    .select('*')
+    .eq('realm_id', realmId)
+    .eq('is_active', true)
+    .order('display_name', { ascending: true })
+
+  console.log(`[EntitySync] Synced ${vendors.length} vendors, returning ${data?.length ?? 0}`)
+  return data ?? []
+}
+
+/**
+ * Invalidate all entity caches for a realm by clearing synced_at far into the past.
+ */
+async function invalidateAllCaches(realmId: string) {
+  const client = getServiceClient()
+  const oldDate = '2000-01-01T00:00:00Z'
+
+  await Promise.all([
+    client.from('qbo_entity_accounts').update({ synced_at: oldDate }).eq('realm_id', realmId),
+    client.from('qbo_entity_classes').update({ synced_at: oldDate }).eq('realm_id', realmId),
+    client.from('qbo_entity_vendors').update({ synced_at: oldDate }).eq('realm_id', realmId),
+  ])
+}
+
+// ---------------------------------------------------------------------------
+// Entity routes (Phase 3)
+// ---------------------------------------------------------------------------
+
+// GET /entities/accounts
+app.get('/entities/accounts', async (c) => {
+  try {
+    const conn = await getActiveConnection()
+    if (!conn) return c.json({ error: 'No active QBO connection' }, 400)
+
+    const rows = await syncAccounts(conn.realm_id)
+    const accounts = rows.map((r: Record<string, unknown>) => ({
+      qbo_id: r.qbo_id,
+      name: r.name,
+      fully_qualified_name: r.fully_qualified_name,
+      account_type: r.account_type,
+    }))
+
+    return c.json({ accounts })
+  } catch (err) {
+    console.error('[entities/accounts] Error:', err)
+    return c.json({ error: 'Failed to fetch accounts' }, 500)
+  }
+})
+
+// GET /entities/classes
+app.get('/entities/classes', async (c) => {
+  try {
+    const conn = await getActiveConnection()
+    if (!conn) return c.json({ error: 'No active QBO connection' }, 400)
+
+    const rows = await syncClasses(conn.realm_id)
+    const classes = rows.map((r: Record<string, unknown>) => ({
+      qbo_id: r.qbo_id,
+      name: r.name,
+      fully_qualified_name: r.fully_qualified_name,
+    }))
+
+    return c.json({ classes })
+  } catch (err) {
+    console.error('[entities/classes] Error:', err)
+    return c.json({ error: 'Failed to fetch classes' }, 500)
+  }
+})
+
+// GET /entities/vendors
+app.get('/entities/vendors', async (c) => {
+  try {
+    const conn = await getActiveConnection()
+    if (!conn) return c.json({ error: 'No active QBO connection' }, 400)
+
+    const rows = await syncVendors(conn.realm_id)
+    const vendors = rows.map((r: Record<string, unknown>) => ({
+      qbo_id: r.qbo_id,
+      display_name: r.display_name,
+    }))
+
+    return c.json({ vendors })
+  } catch (err) {
+    console.error('[entities/vendors] Error:', err)
+    return c.json({ error: 'Failed to fetch vendors' }, 500)
+  }
+})
+
+// POST /entities/vendors/find-or-create
+app.post('/entities/vendors/find-or-create', async (c) => {
+  try {
+    const conn = await getActiveConnection()
+    if (!conn) return c.json({ error: 'No active QBO connection' }, 400)
+
+    const body = await c.req.json()
+    const name = (body.name ?? '').trim()
+    if (!name) return c.json({ error: 'name is required' }, 400)
+
+    const client = getServiceClient()
+    const nameLower = name.toLowerCase()
+
+    // 1. Search cache for fuzzy match
+    const { data: cachedVendors } = await client
+      .from('qbo_entity_vendors')
+      .select('*')
+      .eq('realm_id', conn.realm_id)
+      .eq('is_active', true)
+
+    const cacheMatch = (cachedVendors ?? []).find(
+      (v: Record<string, unknown>) =>
+        (v.display_name as string).toLowerCase() === nameLower
+    )
+    if (cacheMatch) {
+      return c.json({
+        vendor: { qbo_id: cacheMatch.qbo_id, display_name: cacheMatch.display_name },
+      })
+    }
+
+    // 2. Query QBO for fuzzy match
+    const query = encodeURIComponent(
+      `SELECT * FROM Vendor WHERE DisplayName LIKE '%${name.replace(/'/g, "\\'")}%'`
+    )
+    const qboResp = await authenticatedQboFetch(`/v3/company/{realmId}/query?query=${query}`)
+    if (qboResp.ok) {
+      const qboBody = await qboResp.json()
+      const vendors = qboBody?.QueryResponse?.Vendor ?? []
+      if (vendors.length > 0) {
+        const match = vendors[0]
+        // Upsert into cache
+        await client.from('qbo_entity_vendors').upsert(
+          {
+            realm_id: conn.realm_id,
+            qbo_id: String(match.Id),
+            display_name: match.DisplayName,
+            is_active: true,
+            synced_at: new Date().toISOString(),
+          },
+          { onConflict: 'realm_id,qbo_id' }
+        )
+        return c.json({
+          vendor: { qbo_id: String(match.Id), display_name: match.DisplayName },
+        })
+      }
+    }
+
+    // 3. Create new vendor in QBO
+    console.log(`[EntitySync] Creating new vendor in QBO: "${name}"`)
+    const createResp = await authenticatedQboFetch(`/v3/company/{realmId}/vendor`, {
+      method: 'POST',
+      body: JSON.stringify({ DisplayName: name }),
+    })
+
+    if (!createResp.ok) {
+      const errText = await createResp.text()
+      console.error('[EntitySync] Vendor create failed:', createResp.status, errText)
+      throw new Error(`Failed to create vendor: ${createResp.status}`)
+    }
+
+    const created = await createResp.json()
+    const newVendor = created.Vendor
+
+    // Upsert into cache
+    await client.from('qbo_entity_vendors').upsert(
+      {
+        realm_id: conn.realm_id,
+        qbo_id: String(newVendor.Id),
+        display_name: newVendor.DisplayName,
+        is_active: true,
+        synced_at: new Date().toISOString(),
+      },
+      { onConflict: 'realm_id,qbo_id' }
+    )
+
+    return c.json({
+      vendor: { qbo_id: String(newVendor.Id), display_name: newVendor.DisplayName },
+    })
+  } catch (err) {
+    console.error('[entities/vendors/find-or-create] Error:', err)
+    return c.json({ error: 'Failed to find or create vendor' }, 500)
+  }
+})
+
+// POST /entities/refresh — force-invalidate all entity caches
+app.post('/entities/refresh', async (c) => {
+  try {
+    const conn = await getActiveConnection()
+    if (!conn) return c.json({ error: 'No active QBO connection' }, 400)
+
+    await invalidateAllCaches(conn.realm_id)
+
+    // Re-sync all entities
+    await Promise.all([
+      syncAccounts(conn.realm_id, true),
+      syncClasses(conn.realm_id, true),
+      syncVendors(conn.realm_id, true),
+    ])
+
+    return c.json({ refreshed: true })
+  } catch (err) {
+    console.error('[entities/refresh] Error:', err)
+    return c.json({ error: 'Failed to refresh entity cache' }, 500)
   }
 })
 
@@ -379,4 +1008,4 @@ app.notFound((c) => {
 Deno.serve(app.fetch)
 
 // Export helpers for use in route handlers added by future plans
-export { getServiceClient, qboFetch }
+export { getServiceClient, qboFetch, authenticatedQboFetch, getValidAccessToken }
