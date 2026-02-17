@@ -1116,7 +1116,6 @@ app.post('/expenses/:expenseId/submit', async (c) => {
       PaymentType: 'CreditCard',
       AccountRef: { value: expense.qbo_payment_account_id },
       TxnDate: expense.date,
-      TotalAmt: Number(expense.amount),
       Line: [
         {
           Amount: Number(expense.amount),
@@ -1127,14 +1126,14 @@ app.post('/expenses/:expenseId/submit', async (c) => {
     }
 
     if (vendorId) {
-      purchaseBody.VendorRef = { value: vendorId }
+      purchaseBody.EntityRef = { value: vendorId, type: 'Vendor' }
     }
     if (expense.memo) {
       purchaseBody.PrivateNote = expense.memo
     }
 
     // 5. POST to QBO
-    console.log(`[submit] Creating Purchase in QBO for expense ${expenseId}`)
+    console.log(`[submit] Creating Purchase in QBO for expense ${expenseId}`, JSON.stringify(purchaseBody))
     const resp = await authenticatedQboFetch(`/v3/company/{realmId}/purchase`, {
       method: 'POST',
       body: JSON.stringify(purchaseBody),
