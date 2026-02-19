@@ -191,6 +191,7 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
         qbo_pushed_at: null,
         qbo_error: null,
         qbo_sync_attempts: 0,
+        qbo_attachment_id: null,
       });
 
       console.log('[CameraCapture] Expense saved successfully!');

@@ -2,10 +2,13 @@ import { useState } from 'react';
 import { CameraCapture } from './components/CameraCapture';
 import { ExpenseList } from './components/ExpenseList';
 import { QboConnectionStatus } from './components/QboConnectionStatus';
+import { LoginPage } from './components/LoginPage';
+import { useAuth } from './hooks/useAuth';
 
 type View = 'list' | 'scan';
 
 function App() {
+  const { session, loading, signIn, signOut } = useAuth();
   const [view, setView] = useState<View>('list');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
@@ -13,6 +16,26 @@ function App() {
     setRefreshTrigger(prev => prev + 1);
     setView('list');
   };
+
+  // Loading state
+  if (loading) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#f9fafb',
+      }}>
+        <p style={{ color: '#6b7280' }}>Loading...</p>
+      </div>
+    );
+  }
+
+  // Not authenticated — show login
+  if (!session) {
+    return <LoginPage onSignIn={signIn} />;
+  }
 
   return (
     <div style={{
@@ -40,8 +63,24 @@ function App() {
         }}>
           Receipt Scanner
         </h1>
-        {/* TODO: Replace isAdmin={true} with real admin check when Supabase Auth is added. */}
-        <QboConnectionStatus isAdmin={true} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <QboConnectionStatus />
+          <button
+            onClick={signOut}
+            style={{
+              padding: '4px 10px',
+              fontSize: '0.75rem',
+              color: '#6b7280',
+              backgroundColor: 'transparent',
+              border: '1px solid #d1d5db',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Logout
+          </button>
+        </div>
       </header>
 
       <main style={{

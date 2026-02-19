@@ -248,7 +248,7 @@ export function ExpenseList({ onScanNew, refreshTrigger }: ExpenseListProps) {
                       fontWeight: '600',
                     }}
                   >
-                    Submitted
+                    Submitted{expense.qbo_attachment_id ? ' (with receipt)' : ''}
                   </span>
                 ) : expense.qbo_error && (expense.qbo_sync_attempts ?? 0) >= 3 ? (
                   <span

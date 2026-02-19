@@ -1,13 +1,17 @@
 // QBO service module for communicating with the QBO Edge Function.
-// NOTE: /auth/start and /connection/status are excluded from JWT middleware in Plan 02.
-// No Authorization header is sent for these endpoints.
+// Sends the user's Supabase Auth JWT as Authorization header.
+
+import { supabase } from './supabase'
 
 const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim()
-const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim()
 
-const authHeaders: HeadersInit = supabaseAnonKey
-  ? { Authorization: `Bearer ${supabaseAnonKey}` }
-  : {}
+async function getAuthHeaders(): Promise<HeadersInit> {
+  const session = (await supabase?.auth.getSession())?.data?.session
+  if (session?.access_token) {
+    return { Authorization: `Bearer ${session.access_token}` }
+  }
+  return {}
+}
 
 export interface ConnectionStatus {
   connected: boolean
@@ -20,7 +24,7 @@ export interface ConnectionStatus {
 export async function getConnectionStatus(): Promise<ConnectionStatus> {
   const response = await fetch(
     `${supabaseUrl}/functions/v1/qbo-api/connection/status`,
-    { headers: authHeaders }
+    { headers: await getAuthHeaders() }
   )
   if (!response.ok) {
     console.error('[QBO] Failed to check connection status:', response.status)
@@ -38,7 +42,7 @@ export async function getConnectionStatus(): Promise<ConnectionStatus> {
 export async function disconnectQbo(): Promise<boolean> {
   const response = await fetch(
     `${supabaseUrl}/functions/v1/qbo-api/connection/disconnect`,
-    { method: 'POST', headers: authHeaders }
+    { method: 'POST', headers: await getAuthHeaders() }
   )
   if (!response.ok) {
     console.error('[QBO] Failed to disconnect:', response.status)
@@ -51,7 +55,7 @@ export async function disconnectQbo(): Promise<boolean> {
 export async function startOAuthFlow(): Promise<void> {
   const response = await fetch(
     `${supabaseUrl}/functions/v1/qbo-api/auth/start`,
-    { headers: authHeaders }
+    { headers: await getAuthHeaders() }
   )
   if (!response.ok) {
     throw new Error('Failed to start OAuth flow')
@@ -85,7 +89,7 @@ export interface QboVendor {
 export async function getQboAccounts(): Promise<QboAccount[]> {
   const response = await fetch(
     `${supabaseUrl}/functions/v1/qbo-api/entities/accounts`,
-    { headers: authHeaders }
+    { headers: await getAuthHeaders() }
   )
   if (!response.ok) {
     console.error('[QBO] Failed to fetch accounts:', response.status)
@@ -98,7 +102,7 @@ export async function getQboAccounts(): Promise<QboAccount[]> {
 export async function getQboClasses(): Promise<QboClass[]> {
   const response = await fetch(
     `${supabaseUrl}/functions/v1/qbo-api/entities/classes`,
-    { headers: authHeaders }
+    { headers: await getAuthHeaders() }
   )
   if (!response.ok) {
     console.error('[QBO] Failed to fetch classes:', response.status)
@@ -111,7 +115,7 @@ export async function getQboClasses(): Promise<QboClass[]> {
 export async function getQboVendors(): Promise<QboVendor[]> {
   const response = await fetch(
     `${supabaseUrl}/functions/v1/qbo-api/entities/vendors`,
-    { headers: authHeaders }
+    { headers: await getAuthHeaders() }
   )
   if (!response.ok) {
     console.error('[QBO] Failed to fetch vendors:', response.status)
@@ -122,11 +126,12 @@ export async function getQboVendors(): Promise<QboVendor[]> {
 }
 
 export async function findOrCreateVendor(name: string): Promise<QboVendor> {
+  const headers = await getAuthHeaders()
   const response = await fetch(
     `${supabaseUrl}/functions/v1/qbo-api/entities/vendors/find-or-create`,
     {
       method: 'POST',
-      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     }
   )
@@ -140,7 +145,7 @@ export async function findOrCreateVendor(name: string): Promise<QboVendor> {
 export async function refreshEntityCache(): Promise<void> {
   const response = await fetch(
     `${supabaseUrl}/functions/v1/qbo-api/entities/refresh`,
-    { method: 'POST', headers: authHeaders }
+    { method: 'POST', headers: await getAuthHeaders() }
   )
   if (!response.ok) {
     throw new Error('Failed to refresh entity cache')
@@ -154,12 +159,13 @@ export async function refreshEntityCache(): Promise<void> {
 export interface SubmitExpenseResult {
   purchase_id: string
   pushed_at: string
+  attachment_id: string | null
 }
 
 export async function submitExpenseToQbo(expenseId: string): Promise<SubmitExpenseResult> {
   const response = await fetch(
     `${supabaseUrl}/functions/v1/qbo-api/expenses/${expenseId}/submit`,
-    { method: 'POST', headers: authHeaders }
+    { method: 'POST', headers: await getAuthHeaders() }
   )
   if (!response.ok) {
     const data = await response.json().catch(() => ({}))

@@ -7,7 +7,7 @@ const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 console.log('[Supabase] URL:', supabaseUrl ? `${supabaseUrl.substring(0, 30)}...` : 'MISSING');
 console.log('[Supabase] Key:', supabaseAnonKey ? `${supabaseAnonKey.substring(0, 20)}... (${supabaseAnonKey.length} chars)` : 'MISSING');
 
-let supabase: SupabaseClient | null = null;
+export let supabase: SupabaseClient | null = null;
 
 if (supabaseUrl && supabaseAnonKey) {
   try {
@@ -41,6 +41,7 @@ export interface Expense {
   qbo_pushed_at: string | null;
   qbo_error: string | null;
   qbo_sync_attempts: number;
+  qbo_attachment_id: string | null;
 }
 
 /**

@@ -38,27 +38,18 @@ app.use(
 // ---------------------------------------------------------------------------
 // 2. JWT auth middleware
 //
-// Routes excluded from JWT verification:
-//   /auth/callback  -- browser redirect from QBO, no Authorization header possible
-//   /auth/start     -- Phase 1 has no Supabase Auth, frontend sends anon key (not a JWT)
-//   /connection/status -- Phase 1 has no Supabase Auth, frontend sends anon key (not a JWT)
-//
-// TODO(Phase 2): Remove /auth/start and /connection/status from exclusion list
-// when Supabase Auth is wired. Only /auth/callback should remain permanently excluded.
+// Only /auth/callback is excluded — browser navigates here directly from QBO.
+// All other routes require a valid Supabase Auth JWT.
 // ---------------------------------------------------------------------------
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const JWKS_URL = `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`
 
 const AUTH_EXCLUDED_SUFFIXES = [
-  '/auth/callback', '/auth/start', '/connection/status', '/connection/disconnect',
-  '/entities/accounts', '/entities/classes', '/entities/vendors',
-  '/entities/vendors/find-or-create', '/entities/refresh',
+  '/auth/callback',
 ]
 
-// Dynamic route patterns excluded from JWT (e.g. /expenses/:id/submit)
-const AUTH_EXCLUDED_PATTERNS = [
-  /\/expenses\/[^/]+\/submit$/,
-]
+// Dynamic route patterns excluded from JWT
+const AUTH_EXCLUDED_PATTERNS: RegExp[] = []
 
 app.use('*', async (c, next) => {
   const path = c.req.path
@@ -316,6 +307,82 @@ async function authenticatedQboFetch(
   }
 
   return response
+}
+
+// ---------------------------------------------------------------------------
+// 7b. QBO Attachment upload helper (Phase 5)
+// Uses multipart/form-data — separate from authenticatedQboFetch (which is JSON).
+// ---------------------------------------------------------------------------
+
+async function qboUploadAttachment(
+  purchaseId: string,
+  fileName: string,
+  imageBytes: Uint8Array,
+  contentType: string
+): Promise<string | null> {
+  try {
+    const { accessToken, realmId } = await getValidAccessToken()
+
+    // Build multipart body manually (Deno edge functions don't have FormData.set for files reliably)
+    const boundary = `----FormBoundary${crypto.randomUUID().replace(/-/g, '')}`
+
+    const metadataJson = JSON.stringify({
+      AttachableRef: [{ EntityRef: { type: 'Purchase', value: purchaseId } }],
+      FileName: fileName,
+      ContentType: contentType,
+    })
+
+    // Assemble parts
+    const encoder = new TextEncoder()
+    const metadataPart = encoder.encode(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file_metadata_0"\r\n` +
+      `Content-Type: application/json\r\n\r\n` +
+      metadataJson + `\r\n`
+    )
+    const fileHeader = encoder.encode(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file_content_0"; filename="${fileName}"\r\n` +
+      `Content-Type: ${contentType}\r\n\r\n`
+    )
+    const fileFooter = encoder.encode(`\r\n--${boundary}--\r\n`)
+
+    // Concatenate into single Uint8Array
+    const bodyLength = metadataPart.length + fileHeader.length + imageBytes.length + fileFooter.length
+    const body = new Uint8Array(bodyLength)
+    let offset = 0
+    body.set(metadataPart, offset); offset += metadataPart.length
+    body.set(fileHeader, offset); offset += fileHeader.length
+    body.set(imageBytes, offset); offset += imageBytes.length
+    body.set(fileFooter, offset)
+
+    const url = `${QBO_BASE_URL}/v3/company/${realmId}/upload?minorversion=75`
+    console.log(`[qboUploadAttachment] POST ${url} (${imageBytes.length} bytes)`)
+
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      },
+      body: body,
+    })
+
+    if (!resp.ok) {
+      const errText = await resp.text()
+      console.error('[qboUploadAttachment] Upload failed:', resp.status, errText)
+      return null
+    }
+
+    const result = await resp.json()
+    const attachableId = result?.AttachableResponse?.[0]?.Attachable?.Id ?? null
+    console.log(`[qboUploadAttachment] Attachable created: ${attachableId}`)
+    return attachableId ? String(attachableId) : null
+  } catch (err) {
+    console.error('[qboUploadAttachment] Error:', err)
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1158,7 +1225,39 @@ app.post('/expenses/:expenseId/submit', async (c) => {
     const result = await resp.json()
     const purchaseId = result?.Purchase?.Id
 
-    // 6. Success — update expense row
+    // 6. Attempt to attach receipt image (non-fatal)
+    let attachmentId: string | null = null
+    if (expense.image_url) {
+      try {
+        console.log(`[submit] Downloading receipt image for attachment: ${expense.image_url}`)
+        const imgResp = await fetch(expense.image_url)
+        if (imgResp.ok) {
+          const imageBytes = new Uint8Array(await imgResp.arrayBuffer())
+          const contentType = imgResp.headers.get('content-type') || 'image/jpeg'
+          // Extract filename from URL
+          const urlPath = new URL(expense.image_url).pathname
+          const fileName = urlPath.split('/').pop() || `receipt_${expenseId}.jpg`
+
+          attachmentId = await qboUploadAttachment(
+            String(purchaseId),
+            fileName,
+            imageBytes,
+            contentType
+          )
+          if (attachmentId) {
+            console.log(`[submit] Receipt attached: ${attachmentId}`)
+          } else {
+            console.warn('[submit] Attachment upload returned null (non-fatal)')
+          }
+        } else {
+          console.warn(`[submit] Failed to download receipt image: ${imgResp.status}`)
+        }
+      } catch (attachErr) {
+        console.error('[submit] Attachment upload failed (non-fatal):', attachErr)
+      }
+    }
+
+    // 7. Success — update expense row
     const pushedAt = new Date().toISOString()
     await client
       .from('expenses')
@@ -1167,11 +1266,12 @@ app.post('/expenses/:expenseId/submit', async (c) => {
         qbo_pushed_at: pushedAt,
         qbo_error: null,
         qbo_sync_attempts: (expense.qbo_sync_attempts ?? 0) + 1,
+        qbo_attachment_id: attachmentId,
       })
       .eq('id', expenseId)
 
     console.log(`[submit] Purchase created: ${purchaseId} for expense ${expenseId}`)
-    return c.json({ purchase_id: String(purchaseId), pushed_at: pushedAt })
+    return c.json({ purchase_id: String(purchaseId), pushed_at: pushedAt, attachment_id: attachmentId })
   } catch (err) {
     console.error('[submit] Unexpected error:', err)
 
