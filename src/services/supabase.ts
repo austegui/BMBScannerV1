@@ -20,6 +20,14 @@ if (supabaseUrl && supabaseAnonKey) {
   console.error('Missing Supabase environment variables. Database features disabled.');
 }
 
+export function getSupabaseClient(): SupabaseClient {
+  if (!supabase) throw new Error('Supabase not configured');
+  return supabase;
+}
+
+// Approval status: auto_ok (current month), pending_approval (previous month), approved, rejected
+export type ApprovalStatus = 'auto_ok' | 'pending_approval' | 'approved' | 'rejected';
+
 // Types for our database
 export interface Expense {
   id?: string;
@@ -32,6 +40,7 @@ export interface Expense {
   memo: string | null;
   image_url: string | null;
   created_at?: string;
+  approval_status?: ApprovalStatus | null;
   qbo_vendor_id: string | null;
   qbo_account_id: string | null;
   qbo_account_name: string | null;
@@ -41,10 +50,25 @@ export interface Expense {
   qbo_pushed_at: string | null;
   qbo_error: string | null;
   qbo_sync_attempts: number;
+  created_by?: string | null;
 }
 
 /**
- * Save an expense to the database
+ * Compute approval_status based on receipt date vs current month.
+ * Current month → auto_ok; previous months → pending_approval.
+ */
+export function getApprovalStatusForDate(receiptDate: string): ApprovalStatus {
+  const now = new Date();
+  const receipt = new Date(receiptDate);
+  if (now.getFullYear() === receipt.getFullYear() && now.getMonth() === receipt.getMonth()) {
+    return 'auto_ok';
+  }
+  return 'pending_approval';
+}
+
+/**
+ * Save an expense to the database.
+ * Pass created_by (user id) and memo (user initials) for audit trail.
  */
 export async function saveExpense(expense: Omit<Expense, 'id' | 'created_at'>): Promise<Expense> {
   if (!supabase) {
@@ -115,6 +139,29 @@ export async function getExpenses(): Promise<Expense[]> {
   if (error) {
     console.error('Error fetching expenses:', error);
     throw new Error(`Failed to fetch expenses: ${error.message}`);
+  }
+
+  return data || [];
+}
+
+/**
+ * Get expenses pending admin approval (receipts from previous months)
+ */
+export async function getPendingApprovals(): Promise<Expense[]> {
+  if (!supabase) {
+    console.warn('Database not configured. Returning empty list.');
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('*')
+    .eq('approval_status', 'pending_approval')
+    .order('date', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching pending approvals:', error);
+    throw new Error(`Failed to fetch pending approvals: ${error.message}`);
   }
 
   return data || [];

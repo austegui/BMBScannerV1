@@ -55,9 +55,11 @@ const AUTH_EXCLUDED_SUFFIXES = [
   '/entities/vendors/find-or-create', '/entities/refresh',
 ]
 
-// Dynamic route patterns excluded from JWT (e.g. /expenses/:id/submit)
+// Dynamic route patterns excluded from JWT (e.g. /expenses/:id/submit, approve, reject)
 const AUTH_EXCLUDED_PATTERNS = [
   /\/expenses\/[^/]+\/submit$/,
+  /\/expenses\/[^/]+\/approve$/,
+  /\/expenses\/[^/]+\/reject$/,
 ]
 
 app.use('*', async (c, next) => {
@@ -157,6 +159,80 @@ async function qboFetch(
   console.log(`[qboFetch] ${method} ${url} -> ${response.status}`)
 
   return response
+}
+
+// ---------------------------------------------------------------------------
+// 5b. QBO Attachable upload (Task 6: receipt image as attachment)
+// Uses multipart/form-data — cannot use qboFetch (it sets application/json).
+// Best-effort: logs errors but does not throw.
+// ---------------------------------------------------------------------------
+const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024 // 10MB per QBO recommendation
+
+async function uploadReceiptAttachmentToQbo(
+  accessToken: string,
+  realmId: string,
+  purchaseId: string,
+  imageUrl: string
+): Promise<void> {
+  try {
+    const imgResp = await fetch(imageUrl)
+    if (!imgResp.ok) {
+      console.warn(`[attach] Failed to fetch image: ${imgResp.status} ${imageUrl}`)
+      return
+    }
+
+    const contentType = imgResp.headers.get('content-type') || 'image/jpeg'
+    const contentLength = imgResp.headers.get('content-length')
+    if (contentLength && parseInt(contentLength, 10) > MAX_ATTACHMENT_SIZE_BYTES) {
+      console.warn(`[attach] Image too large (${contentLength} bytes), skipping attachment`)
+      return
+    }
+
+    const blob = await imgResp.blob()
+    if (blob.size > MAX_ATTACHMENT_SIZE_BYTES) {
+      console.warn(`[attach] Image too large (${blob.size} bytes), skipping attachment`)
+      return
+    }
+
+    const ext = contentType.includes('png') ? 'png' : contentType.includes('gif') ? 'gif' : 'jpg'
+    const fileName = `receipt.${ext}`
+
+    const metadata = {
+      AttachableRef: [
+        {
+          EntityRef: { type: 'Purchase', value: String(purchaseId) },
+        },
+      ],
+      FileName: fileName,
+      ContentType: contentType.split(';')[0]!.trim() || 'image/jpeg',
+    }
+
+    const formData = new FormData()
+    formData.append('file_metadata_0', JSON.stringify(metadata))
+    formData.append('file_content_0', blob, fileName)
+
+    const baseUrl = Deno.env.get('QBO_BASE_URL') ?? 'https://sandbox-quickbooks.api.intuit.com'
+    const uploadUrl = `${baseUrl}/v3/company/${realmId}/upload?minorversion=75`
+
+    const uploadResp = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+      body: formData,
+    })
+
+    if (!uploadResp.ok) {
+      const errText = await uploadResp.text()
+      console.warn(`[attach] QBO upload failed: ${uploadResp.status}`, errText.substring(0, 200))
+      return
+    }
+
+    console.log(`[attach] Receipt image attached to Purchase ${purchaseId}`)
+  } catch (err) {
+    console.warn('[attach] Attachment upload error (non-fatal):', err)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,7 +1088,22 @@ app.post('/expenses/:expenseId/submit', async (c) => {
       return c.json({ error: 'Expense not found' }, 404)
     }
 
-    // 2. Validate required QBO fields
+    // 2. Check approval status — previous-month expenses need admin approval
+    const status = expense.approval_status ?? 'auto_ok'
+    if (status === 'pending_approval') {
+      return c.json(
+        { error: 'This expense is from a previous month and requires admin approval before submitting to QuickBooks.' },
+        400
+      )
+    }
+    if (status === 'rejected') {
+      return c.json(
+        { error: 'This expense was rejected by admin.' },
+        400
+      )
+    }
+
+    // 3. Validate required QBO fields
     if (!expense.qbo_account_id || !expense.qbo_payment_account_id) {
       return c.json(
         { error: 'Missing required QBO fields (qbo_account_id, qbo_payment_account_id)' },
@@ -1020,9 +1111,10 @@ app.post('/expenses/:expenseId/submit', async (c) => {
       )
     }
 
-    // 3. Resolve vendor — if qbo_vendor_id is null but vendor name exists, find-or-create
+    // 4. Resolve vendor — require vendorId (staff cannot create new vendors)
     let vendorId = expense.qbo_vendor_id
     if (!vendorId && expense.vendor) {
+      // Try to find existing vendor by name (for backwards compatibility with old expenses)
       const conn = await getActiveConnection()
       if (!conn) return c.json({ error: 'No active QBO connection' }, 400)
 
@@ -1041,8 +1133,10 @@ app.post('/expenses/:expenseId/submit', async (c) => {
 
       if (cacheMatch) {
         vendorId = cacheMatch.qbo_id as string
+        // Save resolved vendor ID back to expense
+        await client.from('expenses').update({ qbo_vendor_id: vendorId }).eq('id', expenseId)
       } else {
-        // Query QBO
+        // Query QBO for existing vendor
         const query = encodeURIComponent(
           `SELECT * FROM Vendor WHERE DisplayName = '${expense.vendor.trim().replace(/'/g, "\\'")}'`
         )
@@ -1063,48 +1157,26 @@ app.post('/expenses/:expenseId/submit', async (c) => {
               },
               { onConflict: 'realm_id,qbo_id' }
             )
+            // Save resolved vendor ID back to expense
+            await client.from('expenses').update({ qbo_vendor_id: vendorId }).eq('id', expenseId)
           }
         }
-
-        // Still no vendor? Create in QBO
-        if (!vendorId) {
-          console.log(`[submit] Creating vendor in QBO: "${expense.vendor}"`)
-          const createResp = await authenticatedQboFetch(`/v3/company/{realmId}/vendor`, {
-            method: 'POST',
-            body: JSON.stringify({ DisplayName: expense.vendor.trim() }),
-          })
-          if (!createResp.ok) {
-            const errText = await createResp.text()
-            console.error('[submit] Vendor create failed:', createResp.status, errText)
-            await client
-              .from('expenses')
-              .update({
-                qbo_error: `Vendor create failed: ${createResp.status}`,
-                qbo_sync_attempts: (expense.qbo_sync_attempts ?? 0) + 1,
-              })
-              .eq('id', expenseId)
-            return c.json({ error: `Failed to create vendor: ${createResp.status}` }, 500)
-          }
-          const created = await createResp.json()
-          vendorId = String(created.Vendor.Id)
-          await client.from('qbo_entity_vendors').upsert(
-            {
-              realm_id: conn.realm_id,
-              qbo_id: vendorId,
-              display_name: created.Vendor.DisplayName,
-              is_active: true,
-              synced_at: new Date().toISOString(),
-            },
-            { onConflict: 'realm_id,qbo_id' }
-          )
-        }
-
-        // Save resolved vendor ID back to expense
-        await client.from('expenses').update({ qbo_vendor_id: vendorId }).eq('id', expenseId)
       }
     }
 
-    // 4. Build QBO Purchase payload
+    // Require vendorId - staff cannot create new vendors
+    if (!vendorId) {
+      await client
+        .from('expenses')
+        .update({
+          qbo_error: 'Vendor selection required. Please select an existing vendor.',
+          qbo_sync_attempts: (expense.qbo_sync_attempts ?? 0) + 1,
+        })
+        .eq('id', expenseId)
+      return c.json({ error: 'Vendor selection required. Staff cannot create new vendors.' }, 400)
+    }
+
+    // 5. Build QBO Purchase payload
     const lineDetail: Record<string, unknown> = {
       AccountRef: { value: expense.qbo_account_id },
     }
@@ -1132,7 +1204,7 @@ app.post('/expenses/:expenseId/submit', async (c) => {
       purchaseBody.PrivateNote = expense.memo
     }
 
-    // 5. POST to QBO
+    // 6. POST to QBO
     console.log(`[submit] Creating Purchase in QBO for expense ${expenseId}`, JSON.stringify(purchaseBody))
     const resp = await authenticatedQboFetch(`/v3/company/{realmId}/purchase`, {
       method: 'POST',
@@ -1170,6 +1242,17 @@ app.post('/expenses/:expenseId/submit', async (c) => {
       })
       .eq('id', expenseId)
 
+    // 7. Attach receipt image to Purchase (Task 6) — best-effort, does not fail the submit
+    if (purchaseId && expense.image_url) {
+      const tokens = await getValidAccessToken()
+      await uploadReceiptAttachmentToQbo(
+        tokens.accessToken,
+        tokens.realmId,
+        String(purchaseId),
+        expense.image_url
+      )
+    }
+
     console.log(`[submit] Purchase created: ${purchaseId} for expense ${expenseId}`)
     return c.json({ purchase_id: String(purchaseId), pushed_at: pushedAt })
   } catch (err) {
@@ -1186,6 +1269,76 @@ app.post('/expenses/:expenseId/submit', async (c) => {
 
     return c.json({ error: 'Failed to submit expense to QBO' }, 500)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Admin: Approve / Reject previous-month expenses
+// ---------------------------------------------------------------------------
+
+// POST /expenses/:expenseId/approve — admin approves; expense can then be submitted to QBO
+app.post('/expenses/:expenseId/approve', async (c) => {
+  const expenseId = c.req.param('expenseId')
+  const client = getServiceClient()
+
+  const { data: expense, error: fetchError } = await client
+    .from('expenses')
+    .select('id, approval_status')
+    .eq('id', expenseId)
+    .single()
+
+  if (fetchError || !expense) {
+    return c.json({ error: 'Expense not found' }, 404)
+  }
+
+  if (expense.approval_status !== 'pending_approval') {
+    return c.json({ error: 'Expense is not pending approval' }, 400)
+  }
+
+  const { error: updateError } = await client
+    .from('expenses')
+    .update({ approval_status: 'approved' })
+    .eq('id', expenseId)
+
+  if (updateError) {
+    console.error('[approve] Failed:', updateError)
+    return c.json({ error: 'Failed to approve expense' }, 500)
+  }
+
+  console.log(`[approve] Expense ${expenseId} approved by admin`)
+  return c.json({ approved: true })
+})
+
+// POST /expenses/:expenseId/reject — admin rejects; expense cannot be submitted
+app.post('/expenses/:expenseId/reject', async (c) => {
+  const expenseId = c.req.param('expenseId')
+  const client = getServiceClient()
+
+  const { data: expense, error: fetchError } = await client
+    .from('expenses')
+    .select('id, approval_status')
+    .eq('id', expenseId)
+    .single()
+
+  if (fetchError || !expense) {
+    return c.json({ error: 'Expense not found' }, 404)
+  }
+
+  if (expense.approval_status !== 'pending_approval') {
+    return c.json({ error: 'Expense is not pending approval' }, 400)
+  }
+
+  const { error: updateError } = await client
+    .from('expenses')
+    .update({ approval_status: 'rejected' })
+    .eq('id', expenseId)
+
+  if (updateError) {
+    console.error('[reject] Failed:', updateError)
+    return c.json({ error: 'Failed to reject expense' }, 500)
+  }
+
+  console.log(`[reject] Expense ${expenseId} rejected by admin`)
+  return c.json({ rejected: true })
 })
 
 // ---------------------------------------------------------------------------

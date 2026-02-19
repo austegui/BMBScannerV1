@@ -1,11 +1,14 @@
 import { useState } from 'react';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { Login } from './components/Login';
 import { CameraCapture } from './components/CameraCapture';
 import { ExpenseList } from './components/ExpenseList';
 import { QboConnectionStatus } from './components/QboConnectionStatus';
 
 type View = 'list' | 'scan';
 
-function App() {
+function AppContent() {
+  const { user, isAdmin, signOut, initials } = useAuth();
   const [view, setView] = useState<View>('list');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
@@ -13,6 +16,10 @@ function App() {
     setRefreshTrigger(prev => prev + 1);
     setView('list');
   };
+
+  if (!user) {
+    return <Login />;
+  }
 
   return (
     <div style={{
@@ -40,8 +47,23 @@ function App() {
         }}>
           Receipt Scanner
         </h1>
-        {/* TODO: Replace isAdmin={true} with real admin check when Supabase Auth is added. */}
-        <QboConnectionStatus isAdmin={true} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>{initials}</span>
+          <QboConnectionStatus isAdmin={isAdmin} />
+          <button
+            onClick={() => signOut()}
+            style={{
+              fontSize: '0.75rem',
+              color: '#6b7280',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              textDecoration: 'underline',
+            }}
+          >
+            Sign out
+          </button>
+        </div>
       </header>
 
       <main style={{
@@ -56,11 +78,14 @@ function App() {
           <ExpenseList
             onScanNew={() => setView('scan')}
             refreshTrigger={refreshTrigger}
+            isAdmin={isAdmin}
           />
         ) : (
           <CameraCapture
             onComplete={handleScanComplete}
             onCancel={() => setView('list')}
+            userInitials={initials}
+            userId={user.id}
           />
         )}
       </main>
@@ -68,4 +93,10 @@ function App() {
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
+}

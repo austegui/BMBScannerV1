@@ -167,3 +167,29 @@ export async function submitExpenseToQbo(expenseId: string): Promise<SubmitExpen
   }
   return response.json()
 }
+
+// ---------------------------------------------------------------------------
+// Admin: Approve / Reject previous-month expenses
+// ---------------------------------------------------------------------------
+
+export async function approveExpense(expenseId: string): Promise<void> {
+  const response = await fetch(
+    `${supabaseUrl}/functions/v1/qbo-api/expenses/${expenseId}/approve`,
+    { method: 'POST', headers: authHeaders }
+  )
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.error || 'Failed to approve expense')
+  }
+}
+
+export async function rejectExpense(expenseId: string): Promise<void> {
+  const response = await fetch(
+    `${supabaseUrl}/functions/v1/qbo-api/expenses/${expenseId}/reject`,
+    { method: 'POST', headers: authHeaders }
+  )
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.error || 'Failed to reject expense')
+  }
+}

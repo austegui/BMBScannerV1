@@ -1,29 +1,68 @@
 import { useState, useEffect } from 'react';
-import { getExpenses, deleteExpense, Expense } from '../services/supabase';
-import { submitExpenseToQbo } from '../services/qboService';
+import { getExpenses, getPendingApprovals, deleteExpense, Expense } from '../services/supabase';
+import { submitExpenseToQbo, approveExpense, rejectExpense } from '../services/qboService';
 
 interface ExpenseListProps {
   onScanNew: () => void;
   refreshTrigger?: number;
+  isAdmin?: boolean;
 }
 
-export function ExpenseList({ onScanNew, refreshTrigger }: ExpenseListProps) {
+export function ExpenseList({ onScanNew, refreshTrigger, isAdmin = false }: ExpenseListProps) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<Expense[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
 
   const loadExpenses = async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await getExpenses();
-      setExpenses(data);
+      const [expensesData, pendingData] = await Promise.all([
+        getExpenses(),
+        getPendingApprovals(),
+      ]);
+      setExpenses(expensesData);
+      setPendingApprovals(pendingData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load expenses');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleApprove = async (expense: Expense) => {
+    if (!expense.id) return;
+    setApprovingId(expense.id);
+    try {
+      await approveExpense(expense.id);
+      setPendingApprovals((prev) => prev.filter((e) => e.id !== expense.id));
+      setExpenses((prev) =>
+        prev.map((e) => (e.id === expense.id ? { ...e, approval_status: 'approved' as const } : e))
+      );
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to approve');
+    } finally {
+      setApprovingId(null);
+    }
+  };
+
+  const handleReject = async (expense: Expense) => {
+    if (!expense.id) return;
+    setApprovingId(expense.id);
+    try {
+      await rejectExpense(expense.id);
+      setPendingApprovals((prev) => prev.filter((e) => e.id !== expense.id));
+      setExpenses((prev) =>
+        prev.map((e) => (e.id === expense.id ? { ...e, approval_status: 'rejected' as const } : e))
+      );
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to reject');
+    } finally {
+      setApprovingId(null);
     }
   };
 
@@ -134,6 +173,83 @@ export function ExpenseList({ onScanNew, refreshTrigger }: ExpenseListProps) {
           <button onClick={loadExpenses} style={{ marginTop: '0.5rem', color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}>
             Try again
           </button>
+        </div>
+      )}
+
+      {/* Pending Approval (Admin only) - Previous month receipts */}
+      {isAdmin && pendingApprovals.length > 0 && (
+        <div style={{
+          backgroundColor: '#fffbeb',
+          border: '1px solid #f59e0b',
+          borderRadius: '8px',
+          padding: '1rem',
+          marginBottom: '1rem'
+        }}>
+          <h2 style={{ fontSize: '1rem', fontWeight: '600', color: '#92400e', margin: '0 0 0.75rem 0' }}>
+            Pending Approval ({pendingApprovals.length})
+          </h2>
+          <p style={{ fontSize: '0.875rem', color: '#78350f', margin: '0 0 0.75rem 0' }}>
+            Receipts from previous months — approve to allow QBO submit.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {pendingApprovals.map((exp) => (
+              <div
+                key={exp.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '0.5rem 0.75rem',
+                  backgroundColor: '#ffffff',
+                  borderRadius: '6px',
+                  border: '1px solid #fde68a'
+                }}
+              >
+                <div>
+                  <span style={{ fontWeight: '600', color: '#111827' }}>{exp.vendor}</span>
+                  <span style={{ marginLeft: '0.5rem', fontSize: '0.875rem', color: '#6b7280' }}>
+                    {formatDate(exp.date)} • ${Number(exp.amount).toFixed(2)}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button
+                    onClick={() => handleApprove(exp)}
+                    disabled={approvingId === exp.id}
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      fontWeight: '600',
+                      backgroundColor: '#16a34a',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: approvingId === exp.id ? 'wait' : 'pointer',
+                      opacity: approvingId === exp.id ? 0.6 : 1
+                    }}
+                  >
+                    {approvingId === exp.id ? '...' : 'Approve'}
+                  </button>
+                  <button
+                    onClick={() => handleReject(exp)}
+                    disabled={approvingId === exp.id}
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      fontWeight: '600',
+                      backgroundColor: '#dc2626',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: approvingId === exp.id ? 'wait' : 'pointer',
+                      opacity: approvingId === exp.id ? 0.6 : 1
+                    }}
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -249,6 +365,32 @@ export function ExpenseList({ onScanNew, refreshTrigger }: ExpenseListProps) {
                     }}
                   >
                     Submitted
+                  </span>
+                ) : (expense.approval_status === 'rejected') ? (
+                  <span
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      backgroundColor: '#f3f4f6',
+                      color: '#9ca3af',
+                      borderRadius: '4px',
+                      fontWeight: '600',
+                    }}
+                  >
+                    Rejected
+                  </span>
+                ) : (expense.approval_status === 'pending_approval') ? (
+                  <span
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      backgroundColor: '#fffbeb',
+                      color: '#d97706',
+                      borderRadius: '4px',
+                      fontWeight: '600',
+                    }}
+                  >
+                    Awaiting approval
                   </span>
                 ) : expense.qbo_error && (expense.qbo_sync_attempts ?? 0) >= 3 ? (
                   <span

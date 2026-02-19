@@ -97,8 +97,15 @@ export async function extractText(
     onProgress?.(80);
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(`Vision API error: ${errorData.error?.message || response.statusText}`);
+      let errorMessage = response.statusText;
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.error?.message || errorData.error?.status || response.statusText;
+      } catch {
+        const text = await response.text();
+        if (text) errorMessage = text.substring(0, 200);
+      }
+      throw new Error(`Vision API error (${response.status}): ${errorMessage}`);
     }
 
     const data = await response.json();

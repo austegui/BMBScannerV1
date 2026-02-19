@@ -6,7 +6,7 @@ import { extractText, terminateOCR } from '../services/ocrService';
 import { parseReceipt } from '../utils/receiptParser';
 import { ReceiptReview } from './ReceiptReview';
 import { ReceiptData } from '../types/receipt';
-import { saveExpense, uploadReceiptImage } from '../services/supabase';
+import { saveExpense, uploadReceiptImage, getApprovalStatusForDate } from '../services/supabase';
 
 // Extended type for QuickBooks data from the form
 interface ExpenseData extends ReceiptData {
@@ -25,9 +25,11 @@ interface ExpenseData extends ReceiptData {
 interface CameraCaptureProps {
   onComplete: () => void;
   onCancel: () => void;
+  userInitials: string | null;
+  userId: string;
 }
 
-export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
+export function CameraCapture({ onComplete, onCancel, userInitials, userId }: CameraCaptureProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const [capturedFile, setCapturedFile] = useState<File | null>(null);
@@ -148,7 +150,8 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
       setShowReview(true);
     } catch (error) {
       console.error('[CameraCapture] OCR processing failed:', error);
-      alert('Failed to process receipt. Please try again.');
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      alert(`Failed to process receipt: ${message}`);
     } finally {
       setIsProcessing(false);
       setOcrProgress(0);
@@ -172,16 +175,22 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
       }
 
       // Save expense to database
-      console.log('[CameraCapture] Saving expense to database...');
+      const dateStr = expenseData.date?.toISOString().split('T')[0] || new Date().toISOString().split('T')[0];
+      const approvalStatus = getApprovalStatusForDate(dateStr);
+      console.log('[CameraCapture] Saving expense to database...', { approvalStatus, dateStr });
+
+      const memo = userInitials ?? null;
+
       await saveExpense({
         vendor: expenseData.merchantName || 'Unknown',
-        date: expenseData.date?.toISOString().split('T')[0] || new Date().toISOString().split('T')[0],
+        date: dateStr,
         amount: expenseData.total || 0,
         category: expenseData.category || 'Other Expenses',
         payment_method: expenseData.paymentAccount || expenseData.paymentMethod || 'Other',
         tax: expenseData.tax || null,
-        memo: expenseData.memo || null,
+        memo,
         image_url: imageUrl,
+        approval_status: approvalStatus,
         qbo_vendor_id: expenseData.vendorId ?? null,
         qbo_account_id: expenseData.categoryId ?? null,
         qbo_account_name: expenseData.category ?? null,
@@ -191,6 +200,7 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
         qbo_pushed_at: null,
         qbo_error: null,
         qbo_sync_attempts: 0,
+        created_by: userId,
       });
 
       console.log('[CameraCapture] Expense saved successfully!');
@@ -216,6 +226,7 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
           initialData={ocrResult}
           previewUrl={previewUrl}
           ocrText={ocrText}
+          userInitials={userInitials}
           onConfirm={handleConfirm}
           onBack={() => setShowReview(false)}
         />
