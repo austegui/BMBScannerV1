@@ -2,11 +2,10 @@ import { useState, useEffect } from 'react'
 import { getConnectionStatus, startOAuthFlow } from '../services/qboService'
 
 interface QboConnectionStatusProps {
-  // TODO: Replace with real admin check when Supabase Auth is added.
-  isAdmin: boolean
+  isAdmin?: boolean;
 }
 
-export function QboConnectionStatus({ isAdmin }: QboConnectionStatusProps) {
+export function QboConnectionStatus({ isAdmin: _isAdmin }: QboConnectionStatusProps = {}) {
   const [connected, setConnected] = useState(false)
   const [companyName, setCompanyName] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -72,9 +71,6 @@ export function QboConnectionStatus({ isAdmin }: QboConnectionStatusProps) {
       setError('Failed to start QuickBooks connection. Please try again.')
     }
   }
-
-  // Admin gate — only admins see this component
-  if (!isAdmin) return null
 
   if (loading) {
     return (

@@ -1,14 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getExpenses, getPendingApprovals, deleteExpense, Expense } from '../services/supabase';
 import { submitExpenseToQbo, approveExpense, rejectExpense } from '../services/qboService';
+import { useToast } from './Toast';
 
 interface ExpenseListProps {
   onScanNew: () => void;
+  onEdit?: (expense: Expense) => void;
   refreshTrigger?: number;
   isAdmin?: boolean;
 }
 
-export function ExpenseList({ onScanNew, refreshTrigger, isAdmin = false }: ExpenseListProps) {
+export function ExpenseList({ onScanNew, onEdit, refreshTrigger, isAdmin = false }: ExpenseListProps) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [pendingApprovals, setPendingApprovals] = useState<Expense[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -16,6 +18,9 @@ export function ExpenseList({ onScanNew, refreshTrigger, isAdmin = false }: Expe
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
   const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { toast } = useToast();
 
   const loadExpenses = async () => {
     setIsLoading(true);
@@ -70,13 +75,35 @@ export function ExpenseList({ onScanNew, refreshTrigger, isAdmin = false }: Expe
     loadExpenses();
   }, [refreshTrigger]);
 
+  // Cleanup confirm timer on unmount
+  useEffect(() => {
+    return () => {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    };
+  }, []);
+
+  const startDeleteConfirm = (id: string) => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmingDeleteId(id);
+    confirmTimerRef.current = setTimeout(() => {
+      setConfirmingDeleteId(null);
+    }, 3000);
+  };
+
+  const cancelDeleteConfirm = () => {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmingDeleteId(null);
+  };
+
   const handleDelete = async (id: string) => {
-    if (!confirm('Delete this expense?')) return;
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmingDeleteId(null);
     try {
       await deleteExpense(id);
       setExpenses(expenses.filter(e => e.id !== id));
-    } catch (err) {
-      alert('Failed to delete expense');
+      toast('success', 'Expense deleted');
+    } catch {
+      toast('error', 'Failed to delete expense');
     }
   };
 
@@ -92,9 +119,10 @@ export function ExpenseList({ onScanNew, refreshTrigger, isAdmin = false }: Expe
             : e
         )
       );
+      toast('success', 'Submitted to QuickBooks');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Submit failed';
-      alert(message);
+      toast('error', message);
       // Refresh to get updated error/attempts from DB
       loadExpenses();
     } finally {
@@ -320,7 +348,8 @@ export function ExpenseList({ onScanNew, refreshTrigger, isAdmin = false }: Expe
                 gap: '0.5rem',
                 marginTop: '0.75rem',
                 paddingTop: '0.75rem',
-                borderTop: '1px solid #f3f4f6'
+                borderTop: '1px solid #f3f4f6',
+                flexWrap: 'wrap',
               }}>
                 {expense.image_url && (
                   <button
@@ -338,20 +367,80 @@ export function ExpenseList({ onScanNew, refreshTrigger, isAdmin = false }: Expe
                     View Receipt
                   </button>
                 )}
-                <button
-                  onClick={() => expense.id && handleDelete(expense.id)}
-                  style={{
-                    padding: '0.375rem 0.75rem',
-                    fontSize: '0.75rem',
-                    backgroundColor: '#fef2f2',
-                    color: '#dc2626',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Delete
-                </button>
+                {/* Edit button — only when not yet submitted */}
+                {!expense.qbo_pushed_at && onEdit && (
+                  <button
+                    onClick={() => onEdit(expense)}
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      backgroundColor: '#fffbeb',
+                      color: '#d97706',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Edit
+                  </button>
+                )}
+                {/* Delete with inline confirm */}
+                {confirmingDeleteId === expense.id ? (
+                  <>
+                    <span style={{
+                      padding: '0.375rem 0.5rem',
+                      fontSize: '0.75rem',
+                      color: '#dc2626',
+                      fontWeight: '500',
+                    }}>
+                      Sure?
+                    </span>
+                    <button
+                      onClick={() => expense.id && handleDelete(expense.id)}
+                      style={{
+                        padding: '0.375rem 0.75rem',
+                        fontSize: '0.75rem',
+                        backgroundColor: '#dc2626',
+                        color: '#ffffff',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontWeight: '600',
+                      }}
+                    >
+                      Yes
+                    </button>
+                    <button
+                      onClick={cancelDeleteConfirm}
+                      style={{
+                        padding: '0.375rem 0.75rem',
+                        fontSize: '0.75rem',
+                        backgroundColor: '#f3f4f6',
+                        color: '#374151',
+                        border: 'none',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      No
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => expense.id && startDeleteConfirm(expense.id)}
+                    style={{
+                      padding: '0.375rem 0.75rem',
+                      fontSize: '0.75rem',
+                      backgroundColor: '#fef2f2',
+                      color: '#dc2626',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Delete
+                  </button>
+                )}
                 {/* QBO Submit Button */}
                 {expense.qbo_pushed_at ? (
                   <span
@@ -364,7 +453,7 @@ export function ExpenseList({ onScanNew, refreshTrigger, isAdmin = false }: Expe
                       fontWeight: '600',
                     }}
                   >
-                    Submitted
+                    Submitted{expense.qbo_attachment_id ? ' (with receipt)' : ''}
                   </span>
                 ) : (expense.approval_status === 'rejected') ? (
                   <span

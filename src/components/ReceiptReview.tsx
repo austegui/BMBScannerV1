@@ -26,15 +26,28 @@ const expenseSchema = z.object({
   classId: z.string().nullable(),
   className: z.string().nullable(),
   tax: z.number().min(0).nullable(),
+  memo: z.string().nullable().optional(),
 });
 
 type ExpenseFormData = z.infer<typeof expenseSchema>;
+
+interface EditDefaults {
+  categoryId: string;
+  categoryName: string;
+  paymentAccountId: string;
+  paymentAccountName: string;
+  classId: string | null;
+  className: string | null;
+  memo: string | null;
+  vendorId: string | null;
+}
 
 interface ReceiptReviewProps {
   initialData: ReceiptData;
   previewUrl: string;
   ocrText?: string;
-  userInitials: string | null;
+  userInitials?: string | null;
+  editDefaults?: EditDefaults;
   onConfirm: (data: ReceiptData) => void;
   onBack: () => void;
 }
@@ -69,7 +82,7 @@ function vendorMatchScore(ocrName: string, vendorName: string): number {
   return overlap;
 }
 
-export function ReceiptReview({ initialData, previewUrl, ocrText, userInitials, onConfirm, onBack }: ReceiptReviewProps) {
+export function ReceiptReview({ initialData, previewUrl, ocrText, userInitials, editDefaults, onConfirm, onBack }: ReceiptReviewProps) {
   const [showFullImage, setShowFullImage] = useState(false);
   const [showOcrText, setShowOcrText] = useState(false);
 
@@ -161,6 +174,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, userInitials, 
     classId: null,
     className: null,
     tax: initialData.tax ?? null,
+    memo: userInitials ?? editDefaults?.memo ?? null,
   };
 
   const {
@@ -176,13 +190,44 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, userInitials, 
 
   // When entities finish loading and we have a best vendor match, pre-select it
   useEffect(() => {
-    if (!entitiesLoading && bestVendorMatch) {
+    if (!entitiesLoading && bestVendorMatch && !editDefaults) {
       setValue('vendor', bestVendorMatch.display_name);
       setValue('vendorId', bestVendorMatch.qbo_id);
     }
-  }, [entitiesLoading, bestVendorMatch, setValue]);
+  }, [entitiesLoading, bestVendorMatch, editDefaults, setValue]);
+
+  // When editing, pre-fill QBO dropdowns from saved values
+  useEffect(() => {
+    if (!entitiesLoading && editDefaults) {
+      if (editDefaults.categoryId) {
+        setValue('categoryId', editDefaults.categoryId);
+        setValue('category', editDefaults.categoryName);
+      }
+      if (editDefaults.paymentAccountId) {
+        setValue('paymentAccountId', editDefaults.paymentAccountId);
+        setValue('paymentAccount', editDefaults.paymentAccountName);
+      }
+      if (editDefaults.classId) {
+        setValue('classId', editDefaults.classId);
+        setValue('className', editDefaults.className);
+      }
+      if (editDefaults.memo) {
+        setValue('memo', editDefaults.memo);
+      }
+      if (editDefaults.vendorId) {
+        const v = vendors.find(vn => vn.qbo_id === editDefaults.vendorId);
+        if (v) {
+          setValue('vendorId', v.qbo_id);
+          setValue('vendor', v.display_name);
+        }
+      }
+    }
+  }, [entitiesLoading, editDefaults, vendors, setValue]);
 
   const watchedVendorId = watch('vendorId');
+  const watchedCategoryId = watch('categoryId');
+  const watchedPaymentAccountId = watch('paymentAccountId');
+  const watchedClassId = watch('classId');
 
   const onSubmit = (data: ExpenseFormData) => {
     // Convert back to ReceiptData format with QBO fields for CameraCapture
@@ -536,6 +581,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, userInitials, 
           </label>
           <select
             id="categorySelect"
+            value={watchedCategoryId ?? ''}
             onChange={handleCategoryChange}
             style={errors.categoryId ? selectErrorStyle : selectStyle}
           >
@@ -562,6 +608,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, userInitials, 
           </label>
           <select
             id="paymentAccountSelect"
+            value={watchedPaymentAccountId ?? ''}
             onChange={handlePaymentAccountChange}
             style={errors.paymentAccountId ? selectErrorStyle : selectStyle}
           >
@@ -589,6 +636,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, userInitials, 
             </label>
             <select
               id="classSelect"
+              value={watchedClassId ?? ''}
               onChange={handleClassChange}
               style={selectStyle}
             >

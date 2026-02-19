@@ -7,7 +7,7 @@ const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 console.log('[Supabase] URL:', supabaseUrl ? `${supabaseUrl.substring(0, 30)}...` : 'MISSING');
 console.log('[Supabase] Key:', supabaseAnonKey ? `${supabaseAnonKey.substring(0, 20)}... (${supabaseAnonKey.length} chars)` : 'MISSING');
 
-let supabase: SupabaseClient | null = null;
+export let supabase: SupabaseClient | null = null;
 
 if (supabaseUrl && supabaseAnonKey) {
   try {
@@ -51,6 +51,7 @@ export interface Expense {
   qbo_error: string | null;
   qbo_sync_attempts: number;
   created_by?: string | null;
+  qbo_attachment_id: string | null;
 }
 
 /**
@@ -165,6 +166,29 @@ export async function getPendingApprovals(): Promise<Expense[]> {
   }
 
   return data || [];
+}
+
+/**
+ * Update an expense by ID
+ */
+export async function updateExpense(id: string, updates: Partial<Omit<Expense, 'id' | 'created_at'>>): Promise<Expense> {
+  if (!supabase) {
+    throw new Error('Database not configured. Please add Supabase environment variables.');
+  }
+
+  const { data, error } = await supabase
+    .from('expenses')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Error updating expense:', error);
+    throw new Error(`Failed to update expense: ${error.message}`);
+  }
+
+  return data;
 }
 
 /**
