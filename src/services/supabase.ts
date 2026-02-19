@@ -122,6 +122,29 @@ export async function getExpenses(): Promise<Expense[]> {
 }
 
 /**
+ * Update an expense by ID
+ */
+export async function updateExpense(id: string, updates: Partial<Omit<Expense, 'id' | 'created_at'>>): Promise<Expense> {
+  if (!supabase) {
+    throw new Error('Database not configured. Please add Supabase environment variables.');
+  }
+
+  const { data, error } = await supabase
+    .from('expenses')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Error updating expense:', error);
+    throw new Error(`Failed to update expense: ${error.message}`);
+  }
+
+  return data;
+}
+
+/**
  * Delete an expense by ID
  */
 export async function deleteExpense(id: string): Promise<void> {

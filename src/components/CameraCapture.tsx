@@ -7,6 +7,7 @@ import { parseReceipt } from '../utils/receiptParser';
 import { ReceiptReview } from './ReceiptReview';
 import { ReceiptData } from '../types/receipt';
 import { saveExpense, uploadReceiptImage } from '../services/supabase';
+import { useToast } from './Toast';
 
 // Extended type for QuickBooks data from the form
 interface ExpenseData extends ReceiptData {
@@ -28,6 +29,7 @@ interface CameraCaptureProps {
 }
 
 export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
+  const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const [capturedFile, setCapturedFile] = useState<File | null>(null);
@@ -102,7 +104,7 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
       setCapturedFile(compressionResult.file);
     } catch (error) {
       console.error('Error processing image:', error);
-      alert('Failed to process image. Please try again.');
+      toast('error', 'Failed to process image. Please try again.');
     } finally {
       setIsProcessing(false);
     }
@@ -148,7 +150,7 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
       setShowReview(true);
     } catch (error) {
       console.error('[CameraCapture] OCR processing failed:', error);
-      alert('Failed to process receipt. Please try again.');
+      toast('error', 'Failed to process receipt. Please try again.');
     } finally {
       setIsProcessing(false);
       setOcrProgress(0);
