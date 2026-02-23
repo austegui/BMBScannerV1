@@ -11,7 +11,7 @@ import { Expense } from './services/supabase';
 type View = 'list' | 'scan' | 'edit';
 
 function App() {
-  const { session, loading, signIn, signOut } = useAuth();
+  const { session, loading, signIn, signOut, isAdmin } = useAuth();
   const [view, setView] = useState<View>('list');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
@@ -117,6 +117,7 @@ function App() {
               onScanNew={() => setView('scan')}
               onEdit={handleEditExpense}
               refreshTrigger={refreshTrigger}
+              isAdmin={isAdmin}
             />
           ) : view === 'scan' ? (
             <CameraCapture

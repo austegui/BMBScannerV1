@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Session } from '@supabase/supabase-js'
 import { supabase } from '../services/supabase'
+import { isAdmin as checkIsAdmin } from '../utils/isAdmin'
 
 export function useAuth() {
   const [session, setSession] = useState<Session | null>(null)
@@ -39,5 +40,7 @@ export function useAuth() {
     await supabase.auth.signOut()
   }
 
-  return { session, loading, signIn, signOut }
+  const admin = checkIsAdmin(session)
+
+  return { session, loading, signIn, signOut, isAdmin: admin }
 }

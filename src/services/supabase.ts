@@ -21,6 +21,8 @@ if (supabaseUrl && supabaseAnonKey) {
 }
 
 // Types for our database
+export type ApprovalStatus = 'approved' | 'pending_approval';
+
 export interface Expense {
   id?: string;
   vendor: string;
@@ -32,6 +34,9 @@ export interface Expense {
   memo: string | null;
   image_url: string | null;
   created_at?: string;
+  approval_status?: ApprovalStatus;
+  user_id?: string | null;
+  created_by_email?: string | null;
   qbo_vendor_id: string | null;
   qbo_account_id: string | null;
   qbo_account_name: string | null;
@@ -100,7 +105,7 @@ export async function uploadReceiptImage(file: File): Promise<string> {
 }
 
 /**
- * Get all expenses, sorted by date descending
+ * Get approved expenses (main list), sorted by date descending
  */
 export async function getExpenses(): Promise<Expense[]> {
   if (!supabase) {
@@ -111,6 +116,7 @@ export async function getExpenses(): Promise<Expense[]> {
   const { data, error } = await supabase
     .from('expenses')
     .select('*')
+    .eq('approval_status', 'approved')
     .order('date', { ascending: false });
 
   if (error) {
@@ -119,6 +125,36 @@ export async function getExpenses(): Promise<Expense[]> {
   }
 
   return data || [];
+}
+
+/**
+ * Get expenses pending ADAM admin approval (previous-month transactions)
+ */
+export async function getPendingApprovalExpenses(): Promise<Expense[]> {
+  if (!supabase) {
+    console.warn('Database not configured. Returning empty list.');
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from('expenses')
+    .select('*')
+    .eq('approval_status', 'pending_approval')
+    .order('date', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching pending expenses:', error);
+    throw new Error(`Failed to fetch pending expenses: ${error.message}`);
+  }
+
+  return data || [];
+}
+
+/**
+ * Approve a pending expense (ADAM admin action)
+ */
+export async function approveExpense(id: string): Promise<Expense> {
+  return updateExpense(id, { approval_status: 'approved' });
 }
 
 /**

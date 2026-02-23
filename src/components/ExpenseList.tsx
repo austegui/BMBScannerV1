@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { getExpenses, deleteExpense, Expense } from '../services/supabase';
+import { getExpenses, getPendingApprovalExpenses, deleteExpense, approveExpense, Expense } from '../services/supabase';
 import { submitExpenseToQbo } from '../services/qboService';
 import { useToast } from './Toast';
 
@@ -7,14 +7,17 @@ interface ExpenseListProps {
   onScanNew: () => void;
   onEdit?: (expense: Expense) => void;
   refreshTrigger?: number;
+  isAdmin?: boolean;
 }
 
-export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListProps) {
+export function ExpenseList({ onScanNew, onEdit, refreshTrigger, isAdmin }: ExpenseListProps) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [pendingExpenses, setPendingExpenses] = useState<Expense[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { toast } = useToast();
@@ -23,8 +26,12 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
     setIsLoading(true);
     setError(null);
     try {
-      const data = await getExpenses();
-      setExpenses(data);
+      const [mainData, pendingData] = await Promise.all([
+        getExpenses(),
+        isAdmin ? getPendingApprovalExpenses() : Promise.resolve([]),
+      ]);
+      setExpenses(mainData);
+      setPendingExpenses(pendingData);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load expenses');
     } finally {
@@ -34,7 +41,7 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
 
   useEffect(() => {
     loadExpenses();
-  }, [refreshTrigger]);
+  }, [refreshTrigger, isAdmin]);
 
   // Cleanup confirm timer on unmount
   useEffect(() => {
@@ -65,6 +72,21 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
       toast('success', 'Expense deleted');
     } catch {
       toast('error', 'Failed to delete expense');
+    }
+  };
+
+  const handleApprove = async (expense: Expense) => {
+    if (!expense.id) return;
+    setApprovingId(expense.id);
+    try {
+      await approveExpense(expense.id);
+      setPendingExpenses(prev => prev.filter(e => e.id !== expense.id));
+      setExpenses(prev => [{ ...expense, approval_status: 'approved' as const }, ...prev].sort((a, b) => (b.date > a.date ? 1 : -1)));
+      toast('success', 'Expense approved');
+    } catch {
+      toast('error', 'Failed to approve');
+    } finally {
+      setApprovingId(null);
     }
   };
 
@@ -149,6 +171,69 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
           ${totalAmount.toFixed(2)}
         </p>
       </div>
+
+      {/* Pending Approval (ADAM admin only) */}
+      {isAdmin && pendingExpenses.length > 0 && (
+        <div style={{
+          backgroundColor: '#fffbeb',
+          border: '1px solid #f59e0b',
+          borderRadius: '8px',
+          padding: '1rem',
+          marginBottom: '1rem',
+        }}>
+          <h2 style={{ fontSize: '1rem', fontWeight: '600', color: '#92400e', margin: '0 0 0.75rem 0' }}>
+            Pending Approval ({pendingExpenses.length})
+          </h2>
+          <p style={{ fontSize: '0.875rem', color: '#b45309', margin: '0 0 0.75rem 0' }}>
+            Previous-month expenses — approve to add to main list
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {pendingExpenses.map((expense) => (
+              <div
+                key={expense.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '0.75rem',
+                  backgroundColor: '#fff',
+                  borderRadius: '6px',
+                  border: '1px solid #fcd34d',
+                }}
+              >
+                <div>
+                  <p style={{ fontWeight: '600', color: '#111827', margin: '0 0 0.25rem 0' }}>{expense.vendor}</p>
+                  <p style={{ fontSize: '0.875rem', color: '#6b7280', margin: 0 }}>
+                    {formatDate(expense.date)} • ${Number(expense.amount).toFixed(2)}
+                  </p>
+                  {expense.created_by_email && (
+                    <p style={{ fontSize: '0.75rem', color: '#9ca3af', margin: '0.25rem 0 0 0' }}>
+                      Uploaded by {expense.created_by_email}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={() => expense.id && handleApprove(expense)}
+                  disabled={approvingId === expense.id}
+                  style={{
+                    padding: '0.5rem 1rem',
+                    fontSize: '0.875rem',
+                    fontWeight: '600',
+                    backgroundColor: '#16a34a',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: approvingId === expense.id ? 'wait' : 'pointer',
+                    opacity: approvingId === expense.id ? 0.7 : 1,
+                  }}
+                >
+                  {approvingId === expense.id ? 'Approving...' : 'Approve'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {error && (
         <div style={{

@@ -3,6 +3,8 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { ReceiptData } from '../types/receipt';
 import { useState, useEffect, useMemo } from 'react';
+import { useAuth } from '../hooks/useAuth';
+import { getUserInitials } from '../utils/userInitials';
 import {
   getQboAccounts,
   getQboClasses,
@@ -16,7 +18,7 @@ import {
 // Zod schema for QuickBooks expense form
 const expenseSchema = z.object({
   vendor: z.string().min(1, 'Vendor name required'),
-  vendorId: z.string().nullable(),
+  vendorId: z.string().min(1, 'Please select a vendor from the list'),
   date: z.string().min(1, 'Date required'),
   amount: z.number().min(0.01, 'Amount required'),
   category: z.string().min(1, 'Category required'),
@@ -26,7 +28,7 @@ const expenseSchema = z.object({
   classId: z.string().nullable(),
   className: z.string().nullable(),
   tax: z.number().min(0).nullable(),
-  memo: z.string().optional(),
+  memo: z.string().min(1, 'Memo (your initials) is required'),
 });
 
 type ExpenseFormData = z.infer<typeof expenseSchema>;
@@ -82,9 +84,10 @@ function vendorMatchScore(ocrName: string, vendorName: string): number {
 }
 
 export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, onConfirm, onBack }: ReceiptReviewProps) {
+  const { session } = useAuth();
+  const userInitials = useMemo(() => getUserInitials(session ?? null), [session]);
   const [showFullImage, setShowFullImage] = useState(false);
   const [showOcrText, setShowOcrText] = useState(false);
-  const [isNewVendor, setIsNewVendor] = useState(false);
 
   // QBO entity state
   const [accounts, setAccounts] = useState<QboAccount[]>([]);
@@ -196,6 +199,13 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
     }
   }, [entitiesLoading, bestVendorMatch, editDefaults, setValue]);
 
+  // When creating (no editDefaults): memo = user initials (required, readonly)
+  useEffect(() => {
+    if (!editDefaults) {
+      setValue('memo', userInitials);
+    }
+  }, [editDefaults, userInitials, setValue]);
+
   // When editing, pre-fill QBO dropdowns from saved values
   useEffect(() => {
     if (!entitiesLoading && editDefaults) {
@@ -211,9 +221,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
         setValue('classId', editDefaults.classId);
         setValue('className', editDefaults.className);
       }
-      if (editDefaults.memo) {
-        setValue('memo', editDefaults.memo);
-      }
+      setValue('memo', editDefaults.memo ?? userInitials);
       if (editDefaults.vendorId) {
         const v = vendors.find(vn => vn.qbo_id === editDefaults.vendorId);
         if (v) {
@@ -222,7 +230,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
         }
       }
     }
-  }, [entitiesLoading, editDefaults, vendors, setValue]);
+  }, [entitiesLoading, editDefaults, vendors, userInitials, setValue]);
 
   const watchedVendorId = watch('vendorId');
   const watchedCategoryId = watch('categoryId');
@@ -240,9 +248,11 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
       className: string | null;
       vendorId: string | null;
       memo?: string;
+      dateStr?: string; // YYYY-MM-DD for timezone-safe month comparison
     } = {
       merchantName: data.vendor,
       date: new Date(data.date),
+      dateStr: data.date,
       total: data.amount,
       tax: data.tax,
       lineItems: [],
@@ -292,17 +302,10 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
 
   const handleVendorSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
-    if (val === '__new__') {
-      setIsNewVendor(true);
-      setValue('vendorId', null);
-      setValue('vendor', '');
-    } else {
-      setIsNewVendor(false);
-      const v = vendors.find((vn) => vn.qbo_id === val);
-      if (v) {
-        setValue('vendorId', v.qbo_id);
-        setValue('vendor', v.display_name);
-      }
+    const v = vendors.find((vn) => vn.qbo_id === val);
+    if (v) {
+      setValue('vendorId', v.qbo_id);
+      setValue('vendor', v.display_name);
     }
   };
 
@@ -507,59 +510,25 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
           <label htmlFor="vendorSelect" style={labelStyle}>
             Vendor / Payee *
           </label>
-          {!isNewVendor ? (
-            <>
-              <select
-                id="vendorSelect"
-                value={watchedVendorId ?? ''}
-                onChange={handleVendorSelectChange}
-                style={errors.vendor ? selectErrorStyle : selectStyle}
-              >
-                <option value="">Select vendor...</option>
-                {sortedVendors.map((v) => (
-                  <option key={v.qbo_id} value={v.qbo_id}>
-                    {v.display_name}
-                  </option>
-                ))}
-                <option value="__new__">-- New Vendor --</option>
-              </select>
-              {/* Hidden inputs for form validation */}
-              <input type="hidden" {...register('vendor')} />
-              <input type="hidden" {...register('vendorId')} />
-            </>
-          ) : (
-            <>
-              <input
-                id="vendor"
-                type="text"
-                {...register('vendor')}
-                placeholder="Enter new vendor name"
-                style={errors.vendor ? inputErrorStyle : inputStyle}
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  setIsNewVendor(false);
-                  setValue('vendor', '');
-                  setValue('vendorId', null);
-                }}
-                style={{
-                  marginTop: '0.25rem',
-                  fontSize: '0.75rem',
-                  color: '#2563eb',
-                  background: 'none',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: 0,
-                }}
-              >
-                Back to vendor list
-              </button>
-            </>
-          )}
-          {errors.vendor && (
+          <select
+            id="vendorSelect"
+            value={watchedVendorId ?? ''}
+            onChange={handleVendorSelectChange}
+            style={errors.vendor || errors.vendorId ? selectErrorStyle : selectStyle}
+          >
+            <option value="">Select vendor...</option>
+            {sortedVendors.map((v) => (
+              <option key={v.qbo_id} value={v.qbo_id}>
+                {v.display_name}
+              </option>
+            ))}
+          </select>
+          {/* Hidden inputs for form validation */}
+          <input type="hidden" {...register('vendor')} />
+          <input type="hidden" {...register('vendorId')} />
+          {(errors.vendor || errors.vendorId) && (
             <p style={{ fontSize: '0.75rem', color: '#ef4444', marginTop: '0.25rem' }}>
-              {errors.vendor.message}
+              {(errors.vendor?.message ?? errors.vendorId?.message) as string}
             </p>
           )}
         </div>
@@ -727,21 +696,38 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
           </div>
         </div>
 
-        {/* Memo (optional) */}
+        {/* Memo (initials of user who inputs the tx) */}
         <div style={fieldStyle}>
           <label htmlFor="memo" style={labelStyle}>
-            Memo / Notes (optional)
+            Memo (Your initials) *
           </label>
-          <textarea
+          <input
             id="memo"
+            type="text"
             {...register('memo')}
-            placeholder="Add notes about this expense..."
-            rows={3}
+            readOnly
+            placeholder={userInitials}
+            maxLength={10}
             style={{
               ...inputStyle,
-              resize: 'vertical',
+              backgroundColor: '#f9fafb',
+              cursor: 'not-allowed',
             }}
           />
+          {editDefaults ? (
+            <p style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.25rem' }}>
+              Original memo (initials of who created this expense)
+            </p>
+          ) : (
+            <p style={{ fontSize: '0.75rem', color: '#6b7280', marginTop: '0.25rem' }}>
+              Auto-filled with your initials
+            </p>
+          )}
+          {errors.memo && (
+            <p style={{ fontSize: '0.75rem', color: '#ef4444', marginTop: '0.25rem' }}>
+              {errors.memo.message}
+            </p>
+          )}
         </div>
 
         {/* Buttons */}

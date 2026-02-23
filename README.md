@@ -51,9 +51,11 @@ cd BMBScannerV1
 # Install dependencies
 npm install
 
-# Create .env with your keys (see Environment Variables below)
+# Create .env with your keys (copy .env.example and fill in values)
+cp .env.example .env
+# Edit .env and add your VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY, VITE_GOOGLE_CLOUD_VISION_API_KEY
 
-# Start dev server
+# Start dev server (restart after any .env changes)
 npm run dev
 ```
 
