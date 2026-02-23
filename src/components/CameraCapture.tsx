@@ -7,6 +7,7 @@ import { parseReceipt } from '../utils/receiptParser';
 import { ReceiptReview } from './ReceiptReview';
 import { ReceiptData } from '../types/receipt';
 import { saveExpense, uploadReceiptImage } from '../services/supabase';
+import { useAuth } from '../hooks/useAuth';
 import { useToast } from './Toast';
 
 // Extended type for QuickBooks data from the form
@@ -29,6 +30,7 @@ interface CameraCaptureProps {
 }
 
 export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
+  const { session } = useAuth();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -173,8 +175,20 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
         console.log('[CameraCapture] Image uploaded:', imageUrl);
       }
 
+      // Current month → approved; previous month → pending ADAM admin approval
+      // Use dateStr (YYYY-MM-DD) to avoid timezone bugs with new Date()
+      const dateStr = (expenseData as { dateStr?: string }).dateStr ?? expenseData.date?.toISOString().split('T')[0] ?? new Date().toISOString().split('T')[0];
+      const [txYear, txMonth] = dateStr.split('-').map(Number);
+      const now = new Date();
+      const isCurrentMonth = txYear === now.getFullYear() && txMonth === now.getMonth() + 1;
+      const approvalStatus = isCurrentMonth ? 'approved' : 'pending_approval';
+
+      // Staff accounts: track who created this expense
+      const userId = session?.user?.id ?? null;
+      const createdByEmail = session?.user?.email ?? null;
+
       // Save expense to database
-      console.log('[CameraCapture] Saving expense to database...');
+      console.log('[CameraCapture] Saving expense to database...', { approvalStatus, userId });
       await saveExpense({
         vendor: expenseData.merchantName || 'Unknown',
         date: expenseData.date?.toISOString().split('T')[0] || new Date().toISOString().split('T')[0],
@@ -194,9 +208,15 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
         qbo_error: null,
         qbo_sync_attempts: 0,
         qbo_attachment_id: null,
+        approval_status: approvalStatus,
+        user_id: userId,
+        created_by_email: createdByEmail,
       });
 
       console.log('[CameraCapture] Expense saved successfully!');
+      if (approvalStatus === 'pending_approval') {
+        toast('success', 'Saved. This previous-month expense is pending ADAM admin approval.');
+      }
 
       // Cleanup and navigate back to list
       if (previewUrl) {
