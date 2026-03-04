@@ -1,8 +1,8 @@
-# BMB Receipt Scanner — QBO Integration
+# BMB Receipt Scanner — QuickBooks Desktop Integration
 
 ## What This Project Is
 
-A mobile-first PWA that lets users photograph receipts, extract expense data via OCR (Google Cloud Vision), and submit them to QuickBooks Online as Purchase entities. Built with React + Vite + Supabase Edge Functions.
+A mobile-first PWA that lets users photograph receipts, extract expense data via OCR (Google Cloud Vision), and submit them to QuickBooks Desktop via the QuickBooks Web Connector (QBWC). Built with React + Vite + Supabase Edge Functions + a SOAP server.
 
 **Live:** https://bmb-scanner-v1.vercel.app
 **Repo:** https://github.com/austegui/BMBScannerV1
@@ -12,92 +12,127 @@ A mobile-first PWA that lets users photograph receipts, extract expense data via
 | Layer | Technology |
 |-------|-----------|
 | Frontend | React 19, Vite 7, TypeScript, react-hook-form + zod |
-| Backend | Supabase Edge Functions (Deno + Hono) — single "fat function" `qbo-api` |
+| Edge Function | Supabase Edge Functions (Deno + Hono) — single "fat function" `qbo-api` |
+| SOAP Server | Node.js + Express + `soap` npm package (separate service) |
 | Database | Supabase PostgreSQL |
 | Storage | Supabase Storage (`receipts` bucket) |
 | OCR | Google Cloud Vision API (called from frontend) |
-| Auth | **None yet** — JWT middleware exists but all routes skip verification |
-| Hosting | Vercel (frontend), Supabase (edge functions + DB) |
+| Auth | Supabase Auth (email/password, single admin user) |
+| QB Integration | QBWC (poll-based SOAP ↔ QBXML) |
+| Hosting | Vercel (frontend), Supabase (edge functions + DB), Railway/Render (SOAP server) |
+
+## Architecture Overview
+
+```
+Phone → Frontend → Supabase Edge Function → Queue Table (Supabase DB)
+                                                    ↓
+              Client's PC: QBD ← QBWC ← polls → SOAP Server (Node.js)
+                                                    ↓
+                                              Reads queue, returns QBXML
+                                              Writes responses back to DB
+```
+
+**Key difference from QBO:** This is NOT real-time. Expenses are **queued** and synced on a 5-minute interval when QBWC polls the SOAP server. The frontend shows "Queued" → "Synced" states.
 
 ## Project References
 
 - **Supabase project ref:** `lgodlepuythshpzayzba`
 - **Supabase dashboard:** https://supabase.com/dashboard/project/lgodlepuythshpzayzba
 - **Edge Function logs:** https://supabase.com/dashboard/project/lgodlepuythshpzayzba/functions/qbo-api/logs
-- **Intuit Developer:** https://developer.intuit.com
-- **QBO Sandbox:** https://developer.intuit.com/app/developer/sandbox (open sandbox company to see submitted Purchases under Expenses)
-- **Intuit OAuth redirect URI:** `https://lgodlepuythshpzayzba.supabase.co/functions/v1/qbo-api/auth/callback`
+- **Admin user:** `gustavo@targetdial.co`
 
 ## Completed Phases
 
-### Phase 1: OAuth
-QBO OAuth2 flow — `/auth/start` generates authorization URL, `/auth/callback` exchanges code for tokens, stores in `qbo_connection` table. Frontend has connect/disconnect UI in header.
+### Phases 1–6 (QBO era — superseded)
+OAuth, token management, entity sync, submit expense, auth + attachments, edit + toast. The QBO-specific code (OAuth, REST API calls, CAS token refresh, attachment upload) has been **removed** and replaced with QBD queue-based architecture.
 
-### Phase 2: Token Management
-Auto-refresh with CAS (Compare-And-Swap) for concurrent safety. `getValidAccessToken()` refreshes if <5min remaining. `authenticatedQboFetch()` is the standard wrapper (auto-refresh + 401 retry + `{realmId}` template replacement).
+### Phase 7: QBWC SOAP Server
+New Node.js + Express service implementing the QBWC WSDL interface. Located in `soap-server/`. Handles `authenticate`, `sendRequestXML`, `receiveResponseXML`, `getLastError`, `closeConnection`. Reads pending QBXML from `qbd_sync_queue`, parses QBD responses, updates expense status and entity caches.
 
-### Phase 3: Entity Sync
-Live QBO accounts (Expense + Credit Card types), classes, and vendors synced into 3 cache tables with 24h TTL. Vendor find-or-create pattern. Frontend dropdowns in receipt review form map to QBO entity IDs saved on each expense.
+### Phase 8: Edge Function Adaptation
+Edge function rewritten from QBO REST API calls to queue-based flow. Submit route now inserts QBXML into `qbd_sync_queue` instead of calling QBO API. OAuth routes removed. Entity routes read from cache tables (populated by QBWC sync). New queue status endpoint.
 
-### Phase 4: Submit Expense
-`POST /expenses/:expenseId/submit` reads expense, builds QBO Purchase JSON, POSTs via `authenticatedQboFetch`. Frontend has submit/submitted/retry/failed button states per expense card.
+### Phase 9: Frontend Adaptation
+Async submission UI: "Submit to QuickBooks" → "Queued" (yellow) → "Synced" (green). Connection status shows "QB Desktop: Company Name" + "Last synced: Xm ago" instead of OAuth connect/disconnect. No attachment-related UI (QBD has no attachment API via QBXML). Entity full names saved on expenses for QBXML generation.
+
+### Phase 10: Client Onboarding
+`.qwc` file generator built into SOAP server (`GET /qwc`). Setup documentation provided.
 
 ## Architecture
 
 ### Edge Function (`supabase/functions/qbo-api/index.ts`)
 
-Single Hono app with `basePath('/qbo-api')`. This is the ONLY edge function — all QBO server-side operations are routes in this file.
+Single Hono app with `basePath('/qbo-api')`.
 
 **Middleware stack (order matters):**
 1. CORS (allows localhost:5173 + Vercel production URL)
-2. JWT auth (with exclusion list — currently ALL routes are excluded since there's no Supabase Auth)
+2. JWT auth (health check excluded)
 3. Request logging
 
 **Key helpers:**
-- `qboFetch(accessToken, path, options)` — low-level, always appends `minorversion=75`
-- `authenticatedQboFetch(path, options)` — high-level wrapper, auto token refresh + 401 retry. Use `{realmId}` placeholder in path. **This is how all QBO API calls should be made.**
-- `getValidAccessToken(forceRefresh?)` — CAS-safe token refresh
-- `getActiveConnection()` — reads active `qbo_connection` row
+- `escapeXml()` — XML-safe string encoding
+- `buildCreditCardChargeAdd()` / `buildCheckAdd()` — expense QBXML builders
+- `buildVendorAddQbxml()` — vendor creation QBXML
+- `buildAccountQueryQbxml()` / `buildClassQueryQbxml()` / `buildVendorQueryQbxml()` — entity sync QBXML
+- `getActiveQbdConnection()` — reads active `qbd_connection` row
 - `getServiceClient()` — cached Supabase service_role client
 
 **Routes:**
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | /health | Health check |
-| GET | /auth/start | Generate QBO OAuth URL |
-| GET | /auth/callback | OAuth redirect handler (browser navigates here) |
-| GET | /connection/status | Connection + token health (safe for frontend) |
-| POST | /connection/disconnect | Deactivate connection, clear tokens |
-| GET | /entities/accounts | Synced Expense + Credit Card accounts |
-| GET | /entities/classes | Synced QBO classes |
-| GET | /entities/vendors | Synced QBO vendors |
-| POST | /entities/vendors/find-or-create | Cache lookup -> QBO query -> QBO create |
-| POST | /entities/refresh | Force-invalidate all entity caches |
-| POST | /expenses/:expenseId/submit | Submit expense to QBO as Purchase |
+| GET | /health | Health check (public) |
+| GET | /connection/status | QBD connection + last sync time |
+| GET | /entities/accounts | Cached accounts from QBD |
+| GET | /entities/classes | Cached classes from QBD |
+| GET | /entities/vendors | Cached vendors from QBD |
+| POST | /entities/vendors/find-or-create | Cache lookup → queue VendorAdd |
+| POST | /entities/refresh | Queue entity sync for next QBWC cycle |
+| POST | /expenses/:expenseId/submit | Build QBXML, insert into sync queue |
+| GET | /queue/:id/status | Check queue item status |
+
+### SOAP Server (`soap-server/`)
+
+Standalone Node.js + Express service. Must be deployed to a persistent host (Railway, Render, VPS) with HTTPS.
+
+**Files:**
+- `src/index.ts` — Express server, mounts SOAP endpoint at `/qbwc`, serves `.qwc` file
+- `src/qbwc-service.ts` — QBWC WSDL method implementations (authenticate, sendRequestXML, etc.)
+- `src/qbxml.ts` — QBXML builder/parser utilities
+- `src/qbwc.wsdl` — WSDL definition for QBWC interface
+
+**QBWC sync cycle:**
+1. `authenticate` — validates company_id + shared password
+2. `sendRequestXML` — returns next pending QBXML from queue (loops until empty)
+3. `receiveResponseXML` — parses QBD response, updates queue + expense/entity tables
+4. `closeConnection` — updates `last_sync_at`
 
 ### Database Tables
 
 | Table | RLS | Purpose |
 |-------|-----|---------|
-| `expenses` | allow-all | User expenses with QBO tracking columns |
-| `qbo_connection` | deny-all | OAuth tokens (only service_role access) |
-| `qbo_entity_accounts` | deny-all | Cached QBO accounts |
-| `qbo_entity_classes` | deny-all | Cached QBO classes |
-| `qbo_entity_vendors` | deny-all | Cached QBO vendors |
+| `expenses` | allow-all | User expenses with QBD tracking columns |
+| `qbd_connection` | deny-all | QBWC connection config (shared password, company_id) |
+| `qbd_sync_queue` | deny-all | QBXML request/response queue |
+| `qbo_entity_accounts` | deny-all | Cached QBD accounts (populated by QBWC sync) |
+| `qbo_entity_classes` | deny-all | Cached QBD classes |
+| `qbo_entity_vendors` | deny-all | Cached QBD vendors |
+| `qbo_connection` | deny-all | **Legacy** — QBO OAuth tokens (no longer used) |
 
 ### Frontend Services
 
 - `src/services/supabase.ts` — Supabase client, `Expense` type, CRUD functions
-- `src/services/qboService.ts` — All edge function API calls (connection, entities, submit)
+- `src/services/qboService.ts` — Edge function API calls (connection status, entities, submit, queue status)
 - `src/services/ocrService.ts` — Google Cloud Vision OCR
 
 ### Frontend Components
 
-- `App.tsx` — Top-level router (list vs scan view), renders `QboConnectionStatus` in header
-- `ExpenseList.tsx` — Expense cards with delete, view receipt, QBO submit button
-- `CameraCapture.tsx` — Camera capture -> image preview -> OCR -> receipt review form -> save
-- `ReceiptReview.tsx` — Editable form with QBO entity dropdowns (vendor, expense account, payment account, class)
-- `QboConnectionStatus.tsx` — Connect/disconnect button + company name display
+- `App.tsx` — Top-level router, renders `QboConnectionStatus` in header
+- `ExpenseList.tsx` — Expense cards with sync status badges (Submit/Queued/Synced/Failed)
+- `CameraCapture.tsx` — Camera capture → OCR → receipt review form → save
+- `ReceiptReview.tsx` — Editable form with entity dropdowns
+- `EditExpense.tsx` — Edit existing expense (reuses ReceiptReview)
+- `QboConnectionStatus.tsx` — "QB Desktop: Company" + "Last synced: Xm ago"
+- `Toast.tsx` — Context-based toast notifications
 
 ## Environment Variables
 
@@ -110,13 +145,18 @@ VITE_GOOGLE_CLOUD_VISION_API_KEY=<vision api key>
 
 ### Supabase Secrets (edge function)
 ```
-QBO_CLIENT_ID=<intuit app client id>
-QBO_CLIENT_SECRET=<intuit app client secret>
-QBO_REDIRECT_URI=https://lgodlepuythshpzayzba.supabase.co/functions/v1/qbo-api/auth/callback
 QBO_FRONTEND_URL=https://bmb-scanner-v1.vercel.app
 ```
 
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are auto-injected by Supabase into edge functions.
+
+### SOAP Server (.env)
+```
+PORT=8080
+SUPABASE_URL=https://lgodlepuythshpzayzba.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service role key>
+SOAP_SERVER_URL=https://<deployed-url>
+```
 
 ## Deploy Commands
 
@@ -130,26 +170,62 @@ npx supabase db push --dry-run  # preview first (recommended)
 
 # Frontend
 npx vercel --prod
+
+# SOAP server (from soap-server/)
+npm install && npm run build
+# Deploy dist/ to Railway/Render
 ```
+
+## Client Setup (QBWC)
+
+1. Install QuickBooks Web Connector (QBWC 2.3+) on the PC running QBD
+2. Download the `.qwc` file from `https://<soap-server>/qwc`
+3. Open the `.qwc` file in QBWC — it registers the SOAP endpoint
+4. Enter the shared password when prompted
+5. Grant "always allow" access to the company file
+6. Set auto-run interval to 5 minutes
+7. Keep QBWC running (ideally auto-start with Windows)
+
+## QBXML Data Model Mapping
+
+| QBO Concept | QBD QBXML Equivalent |
+|---|---|
+| Purchase (CreditCard) | `CreditCardChargeAddRq` |
+| Purchase (Check) | `CheckAddRq` |
+| Account query | `AccountQueryRq` |
+| Class query | `ClassQueryRq` |
+| Vendor query | `VendorQueryRq` |
+| Vendor create | `VendorAddRq` |
+| Attachment upload | **Not supported** (QBD has no attachment API via QBXML) |
 
 ## Critical Gotchas
 
 1. **Hono basePath must be `/qbo-api`** — matches the edge function directory name. Without it, ALL routes 404.
-2. **No Vault extension** — Supabase free/starter plan doesn't have `pgsodium` or Vault. Tokens stored directly in `qbo_connection`, protected by deny-all RLS.
-3. **QBO Purchase uses `EntityRef`, NOT `VendorRef`** — `VendorRef` causes 400 "unsupported property". Use `{ value: vendorId, type: 'Vendor' }`.
-4. **QBO Purchase `TotalAmt` is read-only** — never send it on create; it's computed from Line items.
-5. **QBO `minorversion=75`** — enforced on every API call via `qboFetch()`. Required as of August 2025.
-6. **All routes skip JWT** — no Supabase Auth wired yet. The JWT middleware exists and works, but every route is in the exclusion list. Only `/auth/callback` should permanently skip JWT.
-7. **Supabase CLI has no `functions logs`** — must use dashboard UI at the URL above.
-8. **Supabase CLI `login` fails in non-TTY** — developer must run `npx supabase login` manually in a regular terminal.
-9. **Entity cache TTL is 24h** — controlled by `ENTITY_TTL_MS` constant in the edge function.
-10. **CAS token refresh** — when refreshing QBO tokens, the edge function uses Compare-And-Swap on `token_expires_at` to prevent race conditions between concurrent invocations.
+2. **QBWC is poll-based** — submissions are queued, not instant. Frontend must handle async flow.
+3. **QBD QBXML uses FullName strings** — not numeric IDs like QBO. Entity references use `<FullName>` tags.
+4. **No attachments** — QBD has no attachment API via QBXML. Receipt images stay in Supabase Storage only.
+5. **SOAP server must be HTTPS** — QBWC requires SSL for remote connections.
+6. **SOAP server must be persistent** — not serverless. Needs to stay running to accept QBWC polls.
+7. **Supabase CLI has no `functions logs`** — must use dashboard UI.
+8. **Supabase CLI `login` fails in non-TTY** — developer must run `npx supabase login` manually.
+9. **Entity cache populated by QBWC** — must complete at least one sync cycle before entities appear in dropdowns.
+10. **CreditCardChargeAdd uses `EntityRef`** — same as QBO, vendor ref goes in `<EntityRef>`.
+11. **CheckAdd uses `PayeeEntityRef`** — different tag name from CreditCardChargeAdd.
+
+## Expense Sync States
+
+| State | Badge Color | Meaning |
+|-------|-------------|---------|
+| pending | — | Saved but not submitted |
+| queued | Yellow | In sync queue, waiting for QBWC |
+| synced | Green | Successfully synced to QBD (has TxnID) |
+| failed | Red/Gray | Sync failed (retryable or permanent) |
 
 ## Suggested Next Steps
 
-- **Supabase Auth** — Add real user login, remove routes from JWT exclusion list, add `user_id` to expenses table
-- **Receipt image as QBO attachment** — Upload receipt photo as attachment on the QBO Purchase entity
-- **Bulk submit** — "Submit All" button to push all pending expenses at once
-- **Edit expense** — Allow editing before QBO submission
-- **Duplicate detection** — Prevent double-submitting or scanning the same receipt
-- **Toast notifications** — Replace `alert()` calls with proper toast UI
+- **Deploy SOAP server** — Railway or Render, configure HTTPS
+- **Seed `qbd_connection`** — Insert initial connection record with hashed password
+- **Test with QBD** — Install QBWC, run first sync cycle end-to-end
+- **Bulk submit** — "Submit All" button to queue all pending expenses at once
+- **Duplicate detection** — Prevent double-submitting the same receipt
+- **Push notifications** — Browser notification when sync completes

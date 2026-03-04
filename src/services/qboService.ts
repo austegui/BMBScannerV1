@@ -1,4 +1,5 @@
-// QBO service module for communicating with the QBO Edge Function.
+// QBD service module for communicating with the Edge Function.
+// Adapted from QBO REST API to QBD queue-based architecture.
 // Sends the user's Supabase Auth JWT as Authorization header.
 
 import { supabase } from './supabase'
@@ -13,12 +14,15 @@ async function getAuthHeaders(): Promise<HeadersInit> {
   return {}
 }
 
+// ---------------------------------------------------------------------------
+// Connection status (QBD — no OAuth, just sync status)
+// ---------------------------------------------------------------------------
+
 export interface ConnectionStatus {
   connected: boolean
   company_name: string | null
-  token_healthy: boolean
-  refresh_token_warning: boolean
-  refresh_token_expires_at: string | null
+  last_sync_at: string | null
+  sync_interval_minutes: number | null
 }
 
 export async function getConnectionStatus(): Promise<ConnectionStatus> {
@@ -27,45 +31,19 @@ export async function getConnectionStatus(): Promise<ConnectionStatus> {
     { headers: await getAuthHeaders() }
   )
   if (!response.ok) {
-    console.error('[QBO] Failed to check connection status:', response.status)
+    console.error('[QBD] Failed to check connection status:', response.status)
     return {
       connected: false,
       company_name: null,
-      token_healthy: false,
-      refresh_token_warning: false,
-      refresh_token_expires_at: null,
+      last_sync_at: null,
+      sync_interval_minutes: null,
     }
   }
   return response.json()
 }
 
-export async function disconnectQbo(): Promise<boolean> {
-  const response = await fetch(
-    `${supabaseUrl}/functions/v1/qbo-api/connection/disconnect`,
-    { method: 'POST', headers: await getAuthHeaders() }
-  )
-  if (!response.ok) {
-    console.error('[QBO] Failed to disconnect:', response.status)
-    return false
-  }
-  const data = await response.json()
-  return data.disconnected === true
-}
-
-export async function startOAuthFlow(): Promise<void> {
-  const response = await fetch(
-    `${supabaseUrl}/functions/v1/qbo-api/auth/start`,
-    { headers: await getAuthHeaders() }
-  )
-  if (!response.ok) {
-    throw new Error('Failed to start OAuth flow')
-  }
-  const { url } = await response.json()
-  window.location.href = url
-}
-
 // ---------------------------------------------------------------------------
-// Entity types (Phase 3)
+// Entity types (same cache tables, populated by QBWC sync)
 // ---------------------------------------------------------------------------
 
 export interface QboAccount {
@@ -92,7 +70,7 @@ export async function getQboAccounts(): Promise<QboAccount[]> {
     { headers: await getAuthHeaders() }
   )
   if (!response.ok) {
-    console.error('[QBO] Failed to fetch accounts:', response.status)
+    console.error('[QBD] Failed to fetch accounts:', response.status)
     return []
   }
   const data = await response.json()
@@ -105,7 +83,7 @@ export async function getQboClasses(): Promise<QboClass[]> {
     { headers: await getAuthHeaders() }
   )
   if (!response.ok) {
-    console.error('[QBO] Failed to fetch classes:', response.status)
+    console.error('[QBD] Failed to fetch classes:', response.status)
     return []
   }
   const data = await response.json()
@@ -118,7 +96,7 @@ export async function getQboVendors(): Promise<QboVendor[]> {
     { headers: await getAuthHeaders() }
   )
   if (!response.ok) {
-    console.error('[QBO] Failed to fetch vendors:', response.status)
+    console.error('[QBD] Failed to fetch vendors:', response.status)
     return []
   }
   const data = await response.json()
@@ -153,13 +131,13 @@ export async function refreshEntityCache(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Expense Submit (Phase 4)
+// Expense Submit (QBD — queue-based, not real-time)
 // ---------------------------------------------------------------------------
 
 export interface SubmitExpenseResult {
-  purchase_id: string
-  pushed_at: string
-  attachment_id: string | null
+  status: 'queued'
+  queue_id: string
+  message: string
 }
 
 export async function submitExpenseToQbo(expenseId: string): Promise<SubmitExpenseResult> {
@@ -171,5 +149,27 @@ export async function submitExpenseToQbo(expenseId: string): Promise<SubmitExpen
     const data = await response.json().catch(() => ({}))
     throw new Error(data.error || `Submit failed: ${response.status}`)
   }
+  return response.json()
+}
+
+// ---------------------------------------------------------------------------
+// Queue status check
+// ---------------------------------------------------------------------------
+
+export interface QueueStatus {
+  id: string
+  status: 'pending' | 'sent' | 'completed' | 'failed'
+  error_message: string | null
+  created_at: string
+  sent_at: string | null
+  completed_at: string | null
+}
+
+export async function getQueueStatus(queueId: string): Promise<QueueStatus | null> {
+  const response = await fetch(
+    `${supabaseUrl}/functions/v1/qbo-api/queue/${queueId}/status`,
+    { headers: await getAuthHeaders() }
+  )
+  if (!response.ok) return null
   return response.json()
 }

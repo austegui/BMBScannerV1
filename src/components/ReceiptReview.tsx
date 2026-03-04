@@ -351,10 +351,10 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
     return (
       <div style={{ padding: '2rem', textAlign: 'center' }}>
         <p style={{ fontSize: '1.125rem', color: '#374151', marginBottom: '1rem' }}>
-          Connect to QuickBooks first
+          QuickBooks Desktop not connected
         </p>
         <p style={{ color: '#6b7280', marginBottom: '1.5rem' }}>
-          Go to Settings and connect your QuickBooks Online account to use the expense form.
+          Ensure QuickBooks Web Connector is running and synced at least once to populate entity data.
         </p>
         <button
           type="button"
@@ -379,7 +379,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
   if (entitiesLoading || qboConnected === null) {
     return (
       <div style={{ padding: '2rem', textAlign: 'center' }}>
-        <div style={{ fontSize: '2rem', marginBottom: '1rem' }}>Loading QBO data...</div>
+        <div style={{ fontSize: '2rem', marginBottom: '1rem' }}>Loading QuickBooks data...</div>
         <div style={{
           width: '40px',
           height: '40px',

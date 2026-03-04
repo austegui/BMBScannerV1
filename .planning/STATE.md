@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-16)
 
 **Core value:** Technicians scan a receipt on their phone and it appears in QuickBooks Online as a properly categorized expense with the receipt image attached — no manual QBO data entry by the CFO.
-**Current focus:** Phase 1 - Foundation (Plan 01-03 checkpoint)
+**Current focus:** Phase 2 - Token Management
 
 ## Current Position
 
-Phase: 1 of 6 (Foundation)
-Plan: 01-03 in progress (Tasks 1-2 complete, Task 3 checkpoint pending)
-Status: Paused at checkpoint — waiting for Vercel URL to complete OAuth testing
-Last activity: 2026-02-17 — 01-03 Tasks 1-2 committed, migrations pushed, Edge Function deployed
+Phase: 2 of 6 (Token Management)
+Plan: Not started
+Status: Phase 1 complete — OAuth connected to Sandbox Company_US_1, receipts saving, deployed to Vercel
+Last activity: 2026-02-17 — Phase 1 completed, deployed to https://bmb-scanner-v1.vercel.app
 
-Progress: [██░░░░░░░░] ~14% (2.66/18 plans estimated)
+Progress: [██████░░░░] ~18% (3/16 plans estimated)
 
 ## What's Done
 

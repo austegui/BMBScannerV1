@@ -68,23 +68,23 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
     }
   };
 
-  const handleSubmitToQbo = async (expense: Expense) => {
+  const handleSubmit = async (expense: Expense) => {
     if (!expense.id) return;
     setSubmittingId(expense.id);
     try {
-      const result = await submitExpenseToQbo(expense.id);
+      await submitExpenseToQbo(expense.id);
+      // Update local state to show "Queued" immediately
       setExpenses(prev =>
         prev.map(e =>
           e.id === expense.id
-            ? { ...e, qbo_purchase_id: result.purchase_id, qbo_pushed_at: result.pushed_at, qbo_error: null }
+            ? { ...e, qbd_sync_status: 'queued', qbo_error: null }
             : e
         )
       );
-      toast('success', 'Submitted to QuickBooks');
+      toast('success', 'Queued for QuickBooks sync');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Submit failed';
       toast('error', message);
-      // Refresh to get updated error/attempts from DB
       loadExpenses();
     } finally {
       setSubmittingId(null);
@@ -94,6 +94,113 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  };
+
+  // Determine the sync status badge for an expense
+  const getSyncBadge = (expense: Expense) => {
+    // Already synced to QBD (has TxnID)
+    if (expense.qbo_purchase_id) {
+      return (
+        <span
+          style={{
+            padding: '0.375rem 0.75rem',
+            fontSize: '0.75rem',
+            backgroundColor: '#f0fdf4',
+            color: '#16a34a',
+            borderRadius: '4px',
+            fontWeight: '600',
+          }}
+        >
+          Synced
+        </span>
+      );
+    }
+
+    // Queued — waiting for QBWC sync cycle
+    if (expense.qbd_sync_status === 'queued') {
+      return (
+        <span
+          style={{
+            padding: '0.375rem 0.75rem',
+            fontSize: '0.75rem',
+            backgroundColor: '#fefce8',
+            color: '#ca8a04',
+            borderRadius: '4px',
+            fontWeight: '600',
+          }}
+        >
+          Queued
+        </span>
+      );
+    }
+
+    // Failed after 3+ attempts
+    if (expense.qbo_error && (expense.qbo_sync_attempts ?? 0) >= 3) {
+      return (
+        <span
+          style={{
+            padding: '0.375rem 0.75rem',
+            fontSize: '0.75rem',
+            backgroundColor: '#f3f4f6',
+            color: '#9ca3af',
+            borderRadius: '4px',
+            fontWeight: '600',
+          }}
+          title={expense.qbo_error}
+        >
+          Sync Failed
+        </span>
+      );
+    }
+
+    // Failed but can retry
+    if (expense.qbd_sync_status === 'failed' || expense.qbo_error) {
+      return (
+        <button
+          onClick={() => handleSubmit(expense)}
+          disabled={submittingId === expense.id}
+          style={{
+            padding: '0.375rem 0.75rem',
+            fontSize: '0.75rem',
+            backgroundColor: '#fef2f2',
+            color: '#dc2626',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: submittingId === expense.id ? 'wait' : 'pointer',
+            fontWeight: '600',
+            opacity: submittingId === expense.id ? 0.6 : 1,
+          }}
+          title={expense.qbo_error || undefined}
+        >
+          {submittingId === expense.id ? 'Retrying...' : 'Retry'}
+        </button>
+      );
+    }
+
+    // Ready to submit (has entity mappings)
+    if (expense.qbo_account_id) {
+      return (
+        <button
+          onClick={() => handleSubmit(expense)}
+          disabled={submittingId === expense.id}
+          style={{
+            padding: '0.375rem 0.75rem',
+            fontSize: '0.75rem',
+            backgroundColor: '#eff6ff',
+            color: '#2563eb',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: submittingId === expense.id ? 'wait' : 'pointer',
+            fontWeight: '600',
+            opacity: submittingId === expense.id ? 0.6 : 1,
+          }}
+        >
+          {submittingId === expense.id ? 'Queuing...' : 'Submit to QuickBooks'}
+        </button>
+      );
+    }
+
+    return null;
   };
 
   const totalAmount = expenses.reduce((sum, e) => sum + Number(e.amount), 0);
@@ -251,8 +358,8 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
                     View Receipt
                   </button>
                 )}
-                {/* Edit button — only when not yet submitted */}
-                {!expense.qbo_pushed_at && onEdit && (
+                {/* Edit button — only when not yet synced */}
+                {!expense.qbo_purchase_id && expense.qbd_sync_status !== 'queued' && onEdit && (
                   <button
                     onClick={() => onEdit(expense)}
                     style={{
@@ -325,72 +432,8 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
                     Delete
                   </button>
                 )}
-                {/* QBO Submit Button */}
-                {expense.qbo_pushed_at ? (
-                  <span
-                    style={{
-                      padding: '0.375rem 0.75rem',
-                      fontSize: '0.75rem',
-                      backgroundColor: '#f0fdf4',
-                      color: '#16a34a',
-                      borderRadius: '4px',
-                      fontWeight: '600',
-                    }}
-                  >
-                    Submitted{expense.qbo_attachment_id ? ' (with receipt)' : ''}
-                  </span>
-                ) : expense.qbo_error && (expense.qbo_sync_attempts ?? 0) >= 3 ? (
-                  <span
-                    style={{
-                      padding: '0.375rem 0.75rem',
-                      fontSize: '0.75rem',
-                      backgroundColor: '#f3f4f6',
-                      color: '#9ca3af',
-                      borderRadius: '4px',
-                      fontWeight: '600',
-                    }}
-                    title={expense.qbo_error}
-                  >
-                    Failed
-                  </span>
-                ) : expense.qbo_error ? (
-                  <button
-                    onClick={() => handleSubmitToQbo(expense)}
-                    disabled={submittingId === expense.id}
-                    style={{
-                      padding: '0.375rem 0.75rem',
-                      fontSize: '0.75rem',
-                      backgroundColor: '#fef2f2',
-                      color: '#dc2626',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: submittingId === expense.id ? 'wait' : 'pointer',
-                      fontWeight: '600',
-                      opacity: submittingId === expense.id ? 0.6 : 1,
-                    }}
-                    title={expense.qbo_error}
-                  >
-                    {submittingId === expense.id ? 'Retrying...' : 'Retry'}
-                  </button>
-                ) : expense.qbo_account_id ? (
-                  <button
-                    onClick={() => handleSubmitToQbo(expense)}
-                    disabled={submittingId === expense.id}
-                    style={{
-                      padding: '0.375rem 0.75rem',
-                      fontSize: '0.75rem',
-                      backgroundColor: '#eff6ff',
-                      color: '#2563eb',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: submittingId === expense.id ? 'wait' : 'pointer',
-                      fontWeight: '600',
-                      opacity: submittingId === expense.id ? 0.6 : 1,
-                    }}
-                  >
-                    {submittingId === expense.id ? 'Submitting...' : 'Submit to QBO'}
-                  </button>
-                ) : null}
+                {/* Sync status badge */}
+                {getSyncBadge(expense)}
               </div>
             </div>
           ))}

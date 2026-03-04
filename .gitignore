@@ -34,3 +34,4 @@ create-icons.mjs
 # Supabase local secrets and temporary files (never commit)
 supabase/.env.local
 supabase/.temp/
+.vercel

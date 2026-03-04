@@ -12,7 +12,7 @@ This project adds QuickBooks Online integration to an existing React + Supabase 
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation** - Database schema, Supabase Edge Function scaffold, and OAuth initial setup
+- [x] **Phase 1: Foundation** - Database schema, Supabase Edge Function scaffold, and OAuth initial setup
 - [ ] **Phase 2: Token Management** - Transparent access token refresh, refresh token rotation, expiry tracking
 - [ ] **Phase 3: Entity Sync** - Pull accounts, vendors, and classes from QBO with caching and UI pickers
 - [ ] **Phase 4: Purchase Creation** - Push expenses to QBO as Credit Card Purchase/Charge with full field mapping
@@ -121,7 +121,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/3 | Planning complete | - |
+| 1. Foundation | 3/3 | Complete | 2026-02-17 |
 | 2. Token Management | 0/2 | Not started | - |
 | 3. Entity Sync | 0/3 | Not started | - |
 | 4. Purchase Creation | 0/3 | Not started | - |

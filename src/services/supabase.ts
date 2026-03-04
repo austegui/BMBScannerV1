@@ -42,6 +42,12 @@ export interface Expense {
   qbo_error: string | null;
   qbo_sync_attempts: number;
   qbo_attachment_id: string | null;
+  qbo_vendor_name: string | null;
+  qbo_account_full_name: string | null;
+  qbo_payment_account_name: string | null;
+  qbo_class_name: string | null;
+  qbd_queue_id: string | null;
+  qbd_sync_status: string | null;
 }
 
 /**

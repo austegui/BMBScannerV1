@@ -69,6 +69,10 @@ export function EditExpense({ expense, onComplete, onCancel }: EditExpenseProps)
         qbo_account_name: expenseData.category ?? null,
         qbo_payment_account_id: expenseData.paymentAccountId ?? null,
         qbo_class_id: expenseData.classId ?? null,
+        qbo_vendor_name: expenseData.merchantName || null,
+        qbo_account_full_name: expenseData.category || null,
+        qbo_payment_account_name: expenseData.paymentAccount || null,
+        qbo_class_name: expenseData.className ?? null,
       });
 
       toast('success', 'Expense updated');
