@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
-import { getConnectionStatus, ConnectionStatus } from '../services/qboService'
+import { getConnectionStatus, ConnectionStatus, refreshEntityCache } from '../services/qboService'
 
 export function QboConnectionStatus() {
   const [status, setStatus] = useState<ConnectionStatus | null>(null)
   const [loading, setLoading] = useState(true)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState<string | null>(null)
 
   useEffect(() => {
     checkStatus()
@@ -53,6 +55,21 @@ export function QboConnectionStatus() {
     )
   }
 
+  async function handleRefreshEntities() {
+    setSyncing(true)
+    setSyncMsg(null)
+    try {
+      await refreshEntityCache()
+      setSyncMsg('Queued — will sync on next QBWC poll')
+      setTimeout(() => setSyncMsg(null), 5000)
+    } catch {
+      setSyncMsg('Failed to queue sync')
+      setTimeout(() => setSyncMsg(null), 4000)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   const lastSync = status.last_sync_at ? formatTimeAgo(status.last_sync_at) : 'Never'
 
   return (
@@ -74,9 +91,32 @@ export function QboConnectionStatus() {
         <span style={{ width: '7px', height: '7px', backgroundColor: '#22c55e', borderRadius: '50%', display: 'inline-block' }} />
         QB Desktop{status.company_name ? `: ${status.company_name}` : ''}
       </span>
-      <span style={{ fontSize: '0.65rem', color: '#9ca3af', whiteSpace: 'nowrap' }}>
-        Last synced: {lastSync}
-      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <span style={{ fontSize: '0.65rem', color: '#9ca3af', whiteSpace: 'nowrap' }}>
+          Last synced: {lastSync}
+        </span>
+        <button
+          onClick={handleRefreshEntities}
+          disabled={syncing}
+          style={{
+            fontSize: '0.6rem',
+            padding: '1px 6px',
+            backgroundColor: syncing ? '#e5e7eb' : '#eff6ff',
+            color: syncing ? '#9ca3af' : '#2563eb',
+            border: '1px solid #bfdbfe',
+            borderRadius: '4px',
+            cursor: syncing ? 'default' : 'pointer',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {syncing ? 'Syncing...' : 'Sync Entities'}
+        </button>
+      </div>
+      {syncMsg && (
+        <span style={{ fontSize: '0.6rem', color: '#6b7280', whiteSpace: 'nowrap' }}>
+          {syncMsg}
+        </span>
+      )}
     </div>
   )
 }
