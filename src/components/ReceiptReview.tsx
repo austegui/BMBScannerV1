@@ -98,8 +98,8 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
     () => accounts.filter((a) => a.account_type === 'Expense'),
     [accounts]
   );
-  const creditCardAccounts = useMemo(
-    () => accounts.filter((a) => a.account_type === 'Credit Card'),
+  const paymentAccounts = useMemo(
+    () => accounts.filter((a) => a.account_type === 'Credit Card' || a.account_type === 'Bank'),
     [accounts]
   );
 
@@ -269,7 +269,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
 
   const handlePaymentAccountChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const qboId = e.target.value;
-    const acct = creditCardAccounts.find((a) => a.qbo_id === qboId);
+    const acct = paymentAccounts.find((a) => a.qbo_id === qboId);
     if (acct) {
       setValue('paymentAccountId', acct.qbo_id);
       setValue('paymentAccount', acct.name);
@@ -644,7 +644,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
           )}
         </div>
 
-        {/* Payment Account (Credit Card Accounts) */}
+        {/* Payment Account (Credit Card + Bank Accounts) */}
         <div style={fieldStyle}>
           <label htmlFor="paymentAccountSelect" style={labelStyle}>
             Payment Account *
@@ -656,7 +656,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
             style={errors.paymentAccountId ? selectErrorStyle : selectStyle}
           >
             <option value="">Select payment account...</option>
-            {creditCardAccounts.map((acct) => (
+            {paymentAccounts.map((acct) => (
               <option key={acct.qbo_id} value={acct.qbo_id}>
                 {acct.fully_qualified_name || acct.name}
               </option>
