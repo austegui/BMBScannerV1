@@ -532,12 +532,18 @@ app.post('/expenses/:expenseId/submit', async (c) => {
       if (pa) paymentAccountName = pa.fully_qualified_name
     }
 
+    // Build memo with receipt URL appended
+    let memo = expense.memo || ''
+    if (expense.image_url) {
+      memo = memo ? `${memo} | Receipt: ${expense.image_url}` : `Receipt: ${expense.image_url}`
+    }
+
     // Build QBXML
     const buildData = {
       paymentAccountName,
       txnDate: expense.date,
       vendorName,
-      memo: expense.memo || undefined,
+      memo: memo || undefined,
       expenseAccountName,
       amount: Number(expense.amount),
       className: className || undefined,
