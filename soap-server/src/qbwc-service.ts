@@ -109,8 +109,9 @@ export const qbwcService = {
           }
 
           console.log(`[QBWC] authenticate: ${count} pending items for ${strUserName}`);
-          // Return empty string = company file doesn't matter, just process
-          return { authenticateResult: { string: [ticket, ''] } };
+          // Return empty object — node-soap serializes '' incorrectly (omits the element),
+          // {} forces it to emit <string></string> which QBWC expects
+          return { authenticateResult: { string: [ticket, {}] } };
         } catch (err) {
           console.error('[QBWC] authenticate error:', err);
           return { authenticateResult: { string: [ticket, 'nvu'] } };

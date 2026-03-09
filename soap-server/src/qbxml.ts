@@ -58,8 +58,8 @@ function buildCreditCardChargeAdd(data: ExpenseSubmitData): string {
     <CreditCardChargeAddRq>
       <CreditCardChargeAdd>
         <AccountRef><FullName>${escapeXml(data.paymentAccountFullName)}</FullName></AccountRef>
-        <TxnDate>${data.txnDate}</TxnDate>
-        <EntityRef><FullName>${escapeXml(data.vendorFullName)}</FullName></EntityRef>${
+        <PayeeEntityRef><FullName>${escapeXml(data.vendorFullName)}</FullName></PayeeEntityRef>
+        <TxnDate>${data.txnDate}</TxnDate>${
     data.memo ? `
         <Memo>${escapeXml(data.memo)}</Memo>` : ''
   }${lines}
@@ -88,8 +88,8 @@ function buildCheckAdd(data: ExpenseSubmitData): string {
     <CheckAddRq>
       <CheckAdd>
         <AccountRef><FullName>${escapeXml(data.paymentAccountFullName)}</FullName></AccountRef>
-        <TxnDate>${data.txnDate}</TxnDate>
-        <PayeeEntityRef><FullName>${escapeXml(data.vendorFullName)}</FullName></PayeeEntityRef>${
+        <PayeeEntityRef><FullName>${escapeXml(data.vendorFullName)}</FullName></PayeeEntityRef>
+        <TxnDate>${data.txnDate}</TxnDate>${
     data.memo ? `
         <Memo>${escapeXml(data.memo)}</Memo>` : ''
   }${lines}

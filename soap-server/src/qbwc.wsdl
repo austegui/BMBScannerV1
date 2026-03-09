@@ -7,7 +7,7 @@
              name="QBWebConnectorSvc">
 
   <types>
-    <s:schema targetNamespace="http://developer.intuit.com/">
+    <s:schema targetNamespace="http://developer.intuit.com/" elementFormDefault="qualified">
       <!-- authenticate -->
       <s:element name="authenticate">
         <s:complexType>

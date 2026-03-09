@@ -209,8 +209,9 @@ npm install && npm run build
 7. **Supabase CLI has no `functions logs`** — must use dashboard UI.
 8. **Supabase CLI `login` fails in non-TTY** — developer must run `npx supabase login` manually.
 9. **Entity cache populated by QBWC** — must complete at least one sync cycle before entities appear in dropdowns.
-10. **CreditCardChargeAdd uses `EntityRef`** — same as QBO, vendor ref goes in `<EntityRef>`.
-11. **CheckAdd uses `PayeeEntityRef`** — different tag name from CreditCardChargeAdd.
+10. **CreditCardChargeAdd uses `PayeeEntityRef`** — vendor ref goes in `<PayeeEntityRef>`, same tag as CheckAdd.
+11. **CheckAdd uses `PayeeEntityRef`** — same tag name as CreditCardChargeAdd.
+12. **QBXML element order is strict** — elements must follow the exact sequence from the OSR schema (e.g., `AccountRef → PayeeEntityRef → TxnDate → Memo → ExpenseLineAdd`). Wrong order causes "error when parsing the provided XML text stream."
 
 ## Expense Sync States
 

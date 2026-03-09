@@ -34,12 +34,20 @@ const server = app.listen(PORT, () => {
   const wsdlPath = join(__dirname, 'qbwc.wsdl');
   const wsdlXml = readFileSync(wsdlPath, 'utf-8');
 
-  soap.listen(app, '/qbwc', qbwcService, wsdlXml, () => {
+  const soapServer = soap.listen(app, '/qbwc', qbwcService, wsdlXml, () => {
     console.log(`[SOAP] QBWC SOAP server listening on port ${PORT}`);
     console.log(`[SOAP] WSDL: http://localhost:${PORT}/qbwc?wsdl`);
     console.log(`[SOAP] QWC file: http://localhost:${PORT}/qwc`);
     console.log(`[SOAP] Health: http://localhost:${PORT}/health`);
   });
+
+  // Log all SOAP XML for debugging
+  soapServer.log = (type: string, data: unknown) => {
+    if (type === 'received' || type === 'replied') {
+      const xml = typeof data === 'string' ? data : '';
+      console.log(`[SOAP-${type}] ${xml.substring(0, 600)}`);
+    }
+  };
 });
 
 // Graceful shutdown
