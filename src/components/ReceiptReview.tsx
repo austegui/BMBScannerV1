@@ -263,7 +263,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
     const acct = expenseAccounts.find((a) => a.qbo_id === qboId);
     if (acct) {
       setValue('categoryId', acct.qbo_id);
-      setValue('category', acct.name);
+      setValue('category', acct.fully_qualified_name || acct.name);
     }
   };
 
@@ -272,7 +272,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
     const acct = paymentAccounts.find((a) => a.qbo_id === qboId);
     if (acct) {
       setValue('paymentAccountId', acct.qbo_id);
-      setValue('paymentAccount', acct.name);
+      setValue('paymentAccount', acct.fully_qualified_name || acct.name);
     }
   };
 
@@ -285,7 +285,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
       const cls = classes.find((c) => c.qbo_id === qboId);
       if (cls) {
         setValue('classId', cls.qbo_id);
-        setValue('className', cls.name);
+        setValue('className', cls.fully_qualified_name || cls.name);
       }
     }
   };
