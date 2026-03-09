@@ -157,11 +157,21 @@ export function buildVendorQueryQbxml(): string {
 // Response parsers — extract data from QBXML responses
 // ---------------------------------------------------------------------------
 
+// Decode XML entities back to plain text
+function decodeXmlEntities(str: string): string {
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
 // Simple regex-based XML value extractor (avoids heavy DOM parser dependency)
 function extractTagValue(xml: string, tagName: string): string | null {
   const regex = new RegExp(`<${tagName}>([^<]*)</${tagName}>`);
   const match = xml.match(regex);
-  return match ? match[1] : null;
+  return match ? decodeXmlEntities(match[1]) : null;
 }
 
 function extractAllBlocks(xml: string, tagName: string): string[] {

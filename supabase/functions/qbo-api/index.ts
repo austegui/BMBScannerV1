@@ -103,8 +103,18 @@ function getServiceClient() {
 // QBD uses XML instead of JSON. We build QBXML strings for the queue.
 // ---------------------------------------------------------------------------
 
-function escapeXml(str: string): string {
+// Decode XML/HTML entities first to avoid double-encoding (e.g. &amp; → &amp;amp;)
+function decodeEntities(str: string): string {
   return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+}
+
+function escapeXml(str: string): string {
+  return decodeEntities(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
