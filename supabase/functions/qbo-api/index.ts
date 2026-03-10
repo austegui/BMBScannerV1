@@ -78,7 +78,8 @@ app.use('*', async (c, next) => {
 // ---------------------------------------------------------------------------
 // Admin guard helper
 // ---------------------------------------------------------------------------
-function requireAdmin(c: { get: (key: string) => unknown; json: (data: unknown, status: number) => Response }) {
+// deno-lint-ignore no-explicit-any
+function requireAdmin(c: any): Response | null {
   const role = c.get('userRole') as string
   if (role !== 'admin') {
     return c.json({ error: 'Forbidden', message: 'Admin access required' }, 403)
@@ -840,18 +841,35 @@ app.get('/admin/expenses', async (c) => {
 
   try {
     const sb = getServiceClient()
-    const { data: expenses, error } = await sb
-      .from('expenses')
-      .select('*, profiles!expenses_user_id_fkey(email, full_name)')
-      .order('date', { ascending: false })
-      .limit(200)
 
-    if (error) {
-      console.error('[Admin] Expenses query error:', error)
+    // Fetch expenses and profiles separately (no direct FK between them)
+    const [expResult, profileResult] = await Promise.all([
+      sb.from('expenses')
+        .select('id, user_id, vendor, date, amount, category, payment_method, memo, qbd_sync_status, qbo_error, created_at')
+        .order('date', { ascending: false })
+        .limit(200),
+      sb.from('profiles')
+        .select('id, email, full_name'),
+    ])
+
+    if (expResult.error) {
+      console.error('[Admin] Expenses query error:', expResult.error)
       return c.json({ error: 'Failed to fetch expenses' }, 500)
     }
 
-    return c.json({ expenses: expenses ?? [] })
+    // Build profile lookup map
+    const profileMap = new Map<string, { email: string; full_name: string }>()
+    for (const p of (profileResult.data ?? [])) {
+      profileMap.set(p.id, { email: p.email, full_name: p.full_name })
+    }
+
+    // Attach profile info to each expense
+    const expenses = (expResult.data ?? []).map(exp => ({
+      ...exp,
+      profiles: profileMap.get(exp.user_id) || null,
+    }))
+
+    return c.json({ expenses })
   } catch (err) {
     console.error('[Admin] Expenses error:', err)
     return c.json({ error: 'Internal error' }, 500)
@@ -907,32 +925,19 @@ app.get('/admin/health', async (c) => {
     // Connection info
     const conn = await getActiveQbdConnection()
 
-    // Cache stats
-    const [
-      { count: accountCount },
-      { count: classCount },
-      { count: vendorCount },
-    ] = await Promise.all([
-      sb.from('qbo_entity_accounts').select('*', { count: 'exact', head: true }),
-      sb.from('qbo_entity_classes').select('*', { count: 'exact', head: true }),
-      sb.from('qbo_entity_vendors').select('*', { count: 'exact', head: true }),
-    ])
+    // Cache stats — query individually to avoid destructuring issues
+    const accountsRes = await sb.from('qbo_entity_accounts').select('*', { count: 'exact', head: true })
+    const classesRes = await sb.from('qbo_entity_classes').select('*', { count: 'exact', head: true })
+    const vendorsRes = await sb.from('qbo_entity_vendors').select('*', { count: 'exact', head: true })
 
     // Expense totals
-    const [
-      { count: totalExpenses },
-      { count: syncedExpenses },
-      { count: queuedExpenses },
-      { count: failedExpenses },
-    ] = await Promise.all([
-      sb.from('expenses').select('*', { count: 'exact', head: true }),
-      sb.from('expenses').select('*', { count: 'exact', head: true }).eq('qbd_sync_status', 'synced'),
-      sb.from('expenses').select('*', { count: 'exact', head: true }).eq('qbd_sync_status', 'queued'),
-      sb.from('expenses').select('*', { count: 'exact', head: true }).eq('qbd_sync_status', 'failed'),
-    ])
+    const totalRes = await sb.from('expenses').select('*', { count: 'exact', head: true })
+    const syncedRes = await sb.from('expenses').select('*', { count: 'exact', head: true }).eq('qbd_sync_status', 'synced')
+    const queuedRes = await sb.from('expenses').select('*', { count: 'exact', head: true }).eq('qbd_sync_status', 'queued')
+    const failedRes = await sb.from('expenses').select('*', { count: 'exact', head: true }).eq('qbd_sync_status', 'failed')
 
     // User count
-    const { count: userCount } = await sb.from('profiles').select('*', { count: 'exact', head: true })
+    const usersRes = await sb.from('profiles').select('*', { count: 'exact', head: true })
 
     return c.json({
       connection: conn ? {
@@ -941,17 +946,17 @@ app.get('/admin/health', async (c) => {
         last_sync_at: conn.last_sync_at,
       } : { connected: false },
       cache: {
-        accounts: accountCount ?? 0,
-        classes: classCount ?? 0,
-        vendors: vendorCount ?? 0,
+        accounts: accountsRes.count ?? 0,
+        classes: classesRes.count ?? 0,
+        vendors: vendorsRes.count ?? 0,
       },
       expenses: {
-        total: totalExpenses ?? 0,
-        synced: syncedExpenses ?? 0,
-        queued: queuedExpenses ?? 0,
-        failed: failedExpenses ?? 0,
+        total: totalRes.count ?? 0,
+        synced: syncedRes.count ?? 0,
+        queued: queuedRes.count ?? 0,
+        failed: failedRes.count ?? 0,
       },
-      users: userCount ?? 0,
+      users: usersRes.count ?? 0,
     })
   } catch (err) {
     console.error('[Admin] Health error:', err)
