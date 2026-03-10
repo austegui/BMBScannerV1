@@ -3,15 +3,16 @@ import { CameraCapture } from './components/CameraCapture';
 import { ExpenseList } from './components/ExpenseList';
 import { EditExpense } from './components/EditExpense';
 import { QboConnectionStatus } from './components/QboConnectionStatus';
+import { AdminDashboard } from './components/AdminDashboard';
 import { LoginPage } from './components/LoginPage';
 import { ToastProvider } from './components/Toast';
 import { useAuth } from './hooks/useAuth';
 import { Expense } from './services/supabase';
 
-type View = 'list' | 'scan' | 'edit';
+type View = 'list' | 'scan' | 'edit' | 'admin';
 
 function App() {
-  const { session, loading, signIn, signOut } = useAuth();
+  const { session, loading, signIn, signOut, isAdmin, userId } = useAuth();
   const [view, setView] = useState<View>('list');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
@@ -86,6 +87,24 @@ function App() {
           </h1>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <QboConnectionStatus />
+            {isAdmin && (
+              <button
+                onClick={() => setView(view === 'admin' ? 'list' : 'admin')}
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '0.75rem',
+                  color: view === 'admin' ? '#fff' : '#2563eb',
+                  backgroundColor: view === 'admin' ? '#2563eb' : 'transparent',
+                  border: '1px solid #2563eb',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  fontWeight: '600',
+                }}
+              >
+                Admin
+              </button>
+            )}
             <button
               onClick={signOut}
               style={{
@@ -112,7 +131,9 @@ function App() {
           backgroundColor: '#ffffff',
           minHeight: 'calc(100vh - 60px)'
         }}>
-          {view === 'list' ? (
+          {view === 'admin' && isAdmin ? (
+            <AdminDashboard onBack={() => setView('list')} />
+          ) : view === 'list' ? (
             <ExpenseList
               onScanNew={() => setView('scan')}
               onEdit={handleEditExpense}
@@ -122,6 +143,7 @@ function App() {
             <CameraCapture
               onComplete={handleScanComplete}
               onCancel={() => setView('list')}
+              userId={userId || undefined}
             />
           ) : view === 'edit' && editingExpense ? (
             <EditExpense

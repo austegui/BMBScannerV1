@@ -23,6 +23,7 @@ if (supabaseUrl && supabaseAnonKey) {
 // Types for our database
 export interface Expense {
   id?: string;
+  user_id?: string;
   vendor: string;
   date: string;
   amount: number;

@@ -39,5 +39,9 @@ export function useAuth() {
     await supabase.auth.signOut()
   }
 
-  return { session, loading, signIn, signOut }
+  const userRole = (session?.user?.app_metadata?.role as string) || 'user'
+  const isAdmin = userRole === 'admin'
+  const userId = session?.user?.id || null
+
+  return { session, loading, signIn, signOut, userRole, isAdmin, userId }
 }

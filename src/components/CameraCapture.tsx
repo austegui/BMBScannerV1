@@ -26,9 +26,10 @@ interface ExpenseData extends ReceiptData {
 interface CameraCaptureProps {
   onComplete: () => void;
   onCancel: () => void;
+  userId?: string;
 }
 
-export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
+export function CameraCapture({ onComplete, onCancel, userId }: CameraCaptureProps) {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -184,6 +185,7 @@ export function CameraCapture({ onComplete, onCancel }: CameraCaptureProps) {
         tax: expenseData.tax || null,
         memo: expenseData.memo || null,
         image_url: imageUrl,
+        user_id: userId || undefined,
         qbo_vendor_id: expenseData.vendorId ?? null,
         qbo_account_id: expenseData.categoryId ?? null,
         qbo_account_name: expenseData.category ?? null,

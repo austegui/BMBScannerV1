@@ -29,7 +29,7 @@ app.use(
       if (FRONTEND_URL) allowed.push(FRONTEND_URL)
       return allowed.includes(origin) ? origin : allowed[0]
     },
-    allowMethods: ['GET', 'POST', 'OPTIONS'],
+    allowMethods: ['GET', 'POST', 'PATCH', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization'],
     maxAge: 86400,
   })
@@ -61,11 +61,30 @@ app.use('*', async (c, next) => {
     const JWKS = jose.createRemoteJWKSet(new URL(JWKS_URL))
     const { payload } = await jose.jwtVerify(token, JWKS)
     c.set('jwtPayload', payload)
+
+    // Extract user ID and role from JWT
+    const userId = payload.sub as string
+    const appMetadata = (payload as Record<string, unknown>).app_metadata as Record<string, unknown> | undefined
+    const userRole = (appMetadata?.role as string) || 'user'
+    c.set('userId', userId)
+    c.set('userRole', userRole)
+
     return next()
   } catch (_err) {
     return c.json({ error: 'Unauthorized', message: 'Invalid or missing JWT' }, 401)
   }
 })
+
+// ---------------------------------------------------------------------------
+// Admin guard helper
+// ---------------------------------------------------------------------------
+function requireAdmin(c: { get: (key: string) => unknown; json: (data: unknown, status: number) => Response }) {
+  const role = c.get('userRole') as string
+  if (role !== 'admin') {
+    return c.json({ error: 'Forbidden', message: 'Admin access required' }, 403)
+  }
+  return null
+}
 
 // ---------------------------------------------------------------------------
 // 3. Request logging middleware
@@ -488,6 +507,13 @@ app.post('/expenses/:expenseId/submit', async (c) => {
       return c.json({ error: 'Expense not found' }, 404)
     }
 
+    // Ownership check: users can only submit their own expenses
+    const userId = c.get('userId') as string
+    const userRole = c.get('userRole') as string
+    if (userRole !== 'admin' && expense.user_id !== userId) {
+      return c.json({ error: 'Forbidden', message: 'You can only submit your own expenses' }, 403)
+    }
+
     if (expense.qbo_purchase_id) {
       return c.json({ error: 'Expense already synced to QuickBooks' }, 409)
     }
@@ -621,6 +647,314 @@ app.get('/queue/:id/status', async (c) => {
     return c.json(data)
   } catch (err) {
     console.error('[Queue] Status check error:', err)
+    return c.json({ error: 'Internal error' }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Current user profile
+// ---------------------------------------------------------------------------
+app.get('/me/profile', async (c) => {
+  try {
+    const userId = c.get('userId') as string
+    const sb = getServiceClient()
+
+    const { data: profile, error } = await sb
+      .from('profiles')
+      .select('id, email, full_name, role, is_active, created_at')
+      .eq('id', userId)
+      .single()
+
+    if (error || !profile) {
+      return c.json({ error: 'Profile not found' }, 404)
+    }
+
+    return c.json(profile)
+  } catch (err) {
+    console.error('[Profile] Error:', err)
+    return c.json({ error: 'Internal error' }, 500)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Admin routes
+// ---------------------------------------------------------------------------
+
+// List all users with profiles
+app.get('/admin/users', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+
+  try {
+    const sb = getServiceClient()
+    const { data: profiles, error } = await sb
+      .from('profiles')
+      .select('id, email, full_name, role, is_active, created_at, updated_at')
+      .order('created_at', { ascending: true })
+
+    if (error) {
+      console.error('[Admin] Users query error:', error)
+      return c.json({ error: 'Failed to fetch users' }, 500)
+    }
+
+    return c.json({ users: profiles ?? [] })
+  } catch (err) {
+    console.error('[Admin] Users error:', err)
+    return c.json({ error: 'Internal error' }, 500)
+  }
+})
+
+// Invite (create) a new user
+app.post('/admin/users/invite', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+
+  try {
+    const body = await c.req.json()
+    const { email, full_name, password, role } = body
+
+    if (!email || !password) {
+      return c.json({ error: 'Email and password are required' }, 400)
+    }
+    if (password.length < 6) {
+      return c.json({ error: 'Password must be at least 6 characters' }, 400)
+    }
+
+    const userRole = role === 'admin' ? 'admin' : 'user'
+    const sb = getServiceClient()
+
+    // Create user via admin API
+    const { data: newUser, error: createError } = await sb.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      app_metadata: { role: userRole },
+      user_metadata: { full_name: full_name || '' },
+    })
+
+    if (createError) {
+      console.error('[Admin] Create user error:', createError)
+      return c.json({ error: createError.message }, 400)
+    }
+
+    return c.json({
+      user: {
+        id: newUser.user.id,
+        email: newUser.user.email,
+        full_name: full_name || '',
+        role: userRole,
+      },
+    })
+  } catch (err) {
+    console.error('[Admin] Invite error:', err)
+    return c.json({ error: 'Internal error' }, 500)
+  }
+})
+
+// Change user role
+app.patch('/admin/users/:id/role', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+
+  try {
+    const targetId = c.req.param('id')
+    const body = await c.req.json()
+    const newRole = body.role
+
+    if (!newRole || !['admin', 'user'].includes(newRole)) {
+      return c.json({ error: 'Invalid role. Must be "admin" or "user"' }, 400)
+    }
+
+    const sb = getServiceClient()
+
+    // Update app_metadata on auth.users
+    const { error: authError } = await sb.auth.admin.updateUserById(targetId, {
+      app_metadata: { role: newRole },
+    })
+
+    if (authError) {
+      console.error('[Admin] Update role auth error:', authError)
+      return c.json({ error: authError.message }, 400)
+    }
+
+    // Update profiles table
+    const { error: profileError } = await sb
+      .from('profiles')
+      .update({ role: newRole })
+      .eq('id', targetId)
+
+    if (profileError) {
+      console.error('[Admin] Update role profile error:', profileError)
+    }
+
+    return c.json({ success: true, role: newRole })
+  } catch (err) {
+    console.error('[Admin] Role update error:', err)
+    return c.json({ error: 'Internal error' }, 500)
+  }
+})
+
+// Activate/deactivate user
+app.patch('/admin/users/:id/status', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+
+  try {
+    const targetId = c.req.param('id')
+    const body = await c.req.json()
+    const isActive = Boolean(body.is_active)
+
+    const sb = getServiceClient()
+
+    // Ban/unban in Supabase Auth
+    const { error: authError } = await sb.auth.admin.updateUserById(targetId, {
+      ban_duration: isActive ? 'none' : '876000h', // ~100 years ban = deactivated
+    })
+
+    if (authError) {
+      console.error('[Admin] Update status auth error:', authError)
+      return c.json({ error: authError.message }, 400)
+    }
+
+    // Update profiles table
+    const { error: profileError } = await sb
+      .from('profiles')
+      .update({ is_active: isActive })
+      .eq('id', targetId)
+
+    if (profileError) {
+      console.error('[Admin] Update status profile error:', profileError)
+    }
+
+    return c.json({ success: true, is_active: isActive })
+  } catch (err) {
+    console.error('[Admin] Status update error:', err)
+    return c.json({ error: 'Internal error' }, 500)
+  }
+})
+
+// All expenses with user info (admin view)
+app.get('/admin/expenses', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+
+  try {
+    const sb = getServiceClient()
+    const { data: expenses, error } = await sb
+      .from('expenses')
+      .select('*, profiles!expenses_user_id_fkey(email, full_name)')
+      .order('date', { ascending: false })
+      .limit(200)
+
+    if (error) {
+      console.error('[Admin] Expenses query error:', error)
+      return c.json({ error: 'Failed to fetch expenses' }, 500)
+    }
+
+    return c.json({ expenses: expenses ?? [] })
+  } catch (err) {
+    console.error('[Admin] Expenses error:', err)
+    return c.json({ error: 'Internal error' }, 500)
+  }
+})
+
+// Queue overview (admin view)
+app.get('/admin/queue', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+
+  try {
+    const sb = getServiceClient()
+
+    // Get counts by status
+    const statuses = ['pending', 'sent', 'completed', 'failed']
+    const counts: Record<string, number> = {}
+    for (const status of statuses) {
+      const { count } = await sb
+        .from('qbd_sync_queue')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', status)
+      counts[status] = count ?? 0
+    }
+
+    // Recent items
+    const { data: recent, error } = await sb
+      .from('qbd_sync_queue')
+      .select('id, request_type, related_id, status, error_message, created_at, completed_at')
+      .order('created_at', { ascending: false })
+      .limit(20)
+
+    if (error) {
+      console.error('[Admin] Queue query error:', error)
+      return c.json({ error: 'Failed to fetch queue' }, 500)
+    }
+
+    return c.json({ counts, recent: recent ?? [] })
+  } catch (err) {
+    console.error('[Admin] Queue error:', err)
+    return c.json({ error: 'Internal error' }, 500)
+  }
+})
+
+// System health (admin view)
+app.get('/admin/health', async (c) => {
+  const denied = requireAdmin(c)
+  if (denied) return denied
+
+  try {
+    const sb = getServiceClient()
+
+    // Connection info
+    const conn = await getActiveQbdConnection()
+
+    // Cache stats
+    const [
+      { count: accountCount },
+      { count: classCount },
+      { count: vendorCount },
+    ] = await Promise.all([
+      sb.from('qbo_entity_accounts').select('*', { count: 'exact', head: true }),
+      sb.from('qbo_entity_classes').select('*', { count: 'exact', head: true }),
+      sb.from('qbo_entity_vendors').select('*', { count: 'exact', head: true }),
+    ])
+
+    // Expense totals
+    const [
+      { count: totalExpenses },
+      { count: syncedExpenses },
+      { count: queuedExpenses },
+      { count: failedExpenses },
+    ] = await Promise.all([
+      sb.from('expenses').select('*', { count: 'exact', head: true }),
+      sb.from('expenses').select('*', { count: 'exact', head: true }).eq('qbd_sync_status', 'synced'),
+      sb.from('expenses').select('*', { count: 'exact', head: true }).eq('qbd_sync_status', 'queued'),
+      sb.from('expenses').select('*', { count: 'exact', head: true }).eq('qbd_sync_status', 'failed'),
+    ])
+
+    // User count
+    const { count: userCount } = await sb.from('profiles').select('*', { count: 'exact', head: true })
+
+    return c.json({
+      connection: conn ? {
+        connected: true,
+        company_name: conn.company_name,
+        last_sync_at: conn.last_sync_at,
+      } : { connected: false },
+      cache: {
+        accounts: accountCount ?? 0,
+        classes: classCount ?? 0,
+        vendors: vendorCount ?? 0,
+      },
+      expenses: {
+        total: totalExpenses ?? 0,
+        synced: syncedExpenses ?? 0,
+        queued: queuedExpenses ?? 0,
+        failed: failedExpenses ?? 0,
+      },
+      users: userCount ?? 0,
+    })
+  } catch (err) {
+    console.error('[Admin] Health error:', err)
     return c.json({ error: 'Internal error' }, 500)
   }
 })
