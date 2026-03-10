@@ -45,8 +45,8 @@ const JWKS_URL = `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`
 app.use('*', async (c, next) => {
   const path = c.req.path
 
-  // Health check and queue debug are public
-  if (path.endsWith('/health') || path.includes('/queue/debug/')) {
+  // Health check is public
+  if (path.endsWith('/health')) {
     return next()
   }
 
@@ -621,51 +621,6 @@ app.get('/queue/:id/status', async (c) => {
     return c.json(data)
   } catch (err) {
     console.error('[Queue] Status check error:', err)
-    return c.json({ error: 'Internal error' }, 500)
-  }
-})
-
-// ---------------------------------------------------------------------------
-// Queue diagnostics — show all queue items and connection info
-// ---------------------------------------------------------------------------
-app.get('/queue/debug/all', async (c) => {
-  try {
-    const sb = getServiceClient()
-    const conn = await getActiveQbdConnection()
-    const realmId = conn?.company_id ?? ''
-
-    const [queueResult, connResult, accountsResult, expensesResult] = await Promise.all([
-      sb.from('qbd_sync_queue')
-        .select('id, request_type, status, error_message, related_id, created_at, sent_at, completed_at, company_id')
-        .order('created_at', { ascending: false })
-        .limit(50),
-      sb.from('qbd_connection')
-        .select('company_id, company_name, last_sync_at, is_active, sync_interval_minutes'),
-      sb.from('qbo_entity_accounts')
-        .select('qbo_id, name, fully_qualified_name, account_type')
-        .eq('realm_id', realmId)
-        .eq('is_active', true)
-        .order('fully_qualified_name'),
-      sb.from('expenses')
-        .select('id, vendor, category, qbo_account_name, qbo_account_full_name, qbo_payment_account_name, qbd_sync_status, qbo_error')
-        .order('created_at', { ascending: false })
-        .limit(10)
-    ])
-
-    return c.json({
-      connection: connResult.data,
-      cached_accounts: accountsResult.data,
-      recent_expenses: expensesResult.data,
-      queue_items: queueResult.data,
-      summary: {
-        pending: queueResult.data?.filter((i: any) => i.status === 'pending').length ?? 0,
-        sent: queueResult.data?.filter((i: any) => i.status === 'sent').length ?? 0,
-        completed: queueResult.data?.filter((i: any) => i.status === 'completed').length ?? 0,
-        failed: queueResult.data?.filter((i: any) => i.status === 'failed').length ?? 0,
-      }
-    })
-  } catch (err) {
-    console.error('[Queue] Debug error:', err)
     return c.json({ error: 'Internal error' }, 500)
   }
 })

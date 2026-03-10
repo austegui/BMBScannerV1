@@ -150,21 +150,3 @@ export async function updateExpense(id: string, updates: Partial<Omit<Expense, '
   return data;
 }
 
-/**
- * Delete an expense by ID
- */
-export async function deleteExpense(id: string): Promise<void> {
-  if (!supabase) {
-    throw new Error('Database not configured. Please add Supabase environment variables.');
-  }
-
-  const { error } = await supabase
-    .from('expenses')
-    .delete()
-    .eq('id', id);
-
-  if (error) {
-    console.error('Error deleting expense:', error);
-    throw new Error(`Failed to delete expense: ${error.message}`);
-  }
-}

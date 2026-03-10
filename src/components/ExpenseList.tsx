@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { getExpenses, deleteExpense, Expense } from '../services/supabase';
+import { useState, useEffect } from 'react';
+import { getExpenses, Expense } from '../services/supabase';
 import { submitExpenseToQbo } from '../services/qboService';
 import { useToast } from './Toast';
 
@@ -15,8 +15,6 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
   const [error, setError] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [submittingId, setSubmittingId] = useState<string | null>(null);
-  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { toast } = useToast();
 
   const loadExpenses = async () => {
@@ -36,37 +34,6 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
     loadExpenses();
   }, [refreshTrigger]);
 
-  // Cleanup confirm timer on unmount
-  useEffect(() => {
-    return () => {
-      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    };
-  }, []);
-
-  const startDeleteConfirm = (id: string) => {
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    setConfirmingDeleteId(id);
-    confirmTimerRef.current = setTimeout(() => {
-      setConfirmingDeleteId(null);
-    }, 3000);
-  };
-
-  const cancelDeleteConfirm = () => {
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    setConfirmingDeleteId(null);
-  };
-
-  const handleDelete = async (id: string) => {
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    setConfirmingDeleteId(null);
-    try {
-      await deleteExpense(id);
-      setExpenses(expenses.filter(e => e.id !== id));
-      toast('success', 'Expense deleted');
-    } catch {
-      toast('error', 'Failed to delete expense');
-    }
-  };
 
   const handleSubmit = async (expense: Expense) => {
     if (!expense.id) return;
@@ -373,63 +340,6 @@ export function ExpenseList({ onScanNew, onEdit, refreshTrigger }: ExpenseListPr
                     }}
                   >
                     Edit
-                  </button>
-                )}
-                {/* Delete with inline confirm */}
-                {confirmingDeleteId === expense.id ? (
-                  <>
-                    <span style={{
-                      padding: '0.375rem 0.5rem',
-                      fontSize: '0.75rem',
-                      color: '#dc2626',
-                      fontWeight: '500',
-                    }}>
-                      Sure?
-                    </span>
-                    <button
-                      onClick={() => expense.id && handleDelete(expense.id)}
-                      style={{
-                        padding: '0.375rem 0.75rem',
-                        fontSize: '0.75rem',
-                        backgroundColor: '#dc2626',
-                        color: '#ffffff',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                        fontWeight: '600',
-                      }}
-                    >
-                      Yes
-                    </button>
-                    <button
-                      onClick={cancelDeleteConfirm}
-                      style={{
-                        padding: '0.375rem 0.75rem',
-                        fontSize: '0.75rem',
-                        backgroundColor: '#f3f4f6',
-                        color: '#374151',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      No
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    onClick={() => expense.id && startDeleteConfirm(expense.id)}
-                    style={{
-                      padding: '0.375rem 0.75rem',
-                      fontSize: '0.75rem',
-                      backgroundColor: '#fef2f2',
-                      color: '#dc2626',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Delete
                   </button>
                 )}
                 {/* Sync status badge */}
