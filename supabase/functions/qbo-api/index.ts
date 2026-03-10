@@ -62,13 +62,25 @@ app.use('*', async (c, next) => {
     const { payload } = await jose.jwtVerify(token, JWKS)
     c.set('jwtPayload', payload)
 
-    // Extract user ID and role from JWT
+    // Extract user ID from JWT
     const userId = payload.sub as string
-    const appMetadata = (payload as Record<string, unknown>).app_metadata as Record<string, unknown> | undefined
-    const userRole = (appMetadata?.role as string) || 'user'
     c.set('userId', userId)
-    c.set('userRole', userRole)
 
+    // Get role from JWT app_metadata first, then fall back to profiles table
+    const appMetadata = (payload as Record<string, unknown>).app_metadata as Record<string, unknown> | undefined
+    let userRole = (appMetadata?.role as string) || ''
+
+    // If JWT doesn't have the role yet (stale token), check profiles table
+    if (!userRole) {
+      const { data: profile } = await getServiceClient()
+        .from('profiles')
+        .select('role')
+        .eq('id', userId)
+        .single()
+      userRole = profile?.role || 'user'
+    }
+
+    c.set('userRole', userRole)
     return next()
   } catch (_err) {
     return c.json({ error: 'Unauthorized', message: 'Invalid or missing JWT' }, 401)
