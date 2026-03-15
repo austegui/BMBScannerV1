@@ -2,7 +2,10 @@
 
 A mobile-first Progressive Web App (PWA) for photographing receipts, extracting expense data via OCR, and syncing them to QuickBooks Desktop through the QuickBooks Web Connector (QBWC).
 
-**Live:** https://bmb-scanner-v1.vercel.app
+| Service | URL |
+|---------|-----|
+| App | https://bmb-scanner-v1.vercel.app |
+| SOAP Server | https://soap-server-production.up.railway.app |
 
 ## Status
 
@@ -14,7 +17,7 @@ A mobile-first Progressive Web App (PWA) for photographing receipts, extracting 
 | Admin dashboard (Users, Expenses, Queue, Health) | Done |
 | Role-based access control (admin/user) | Done |
 | User management (invite, roles, activate/deactivate) | Done |
-| SOAP server | Done (deploy to production host pending) |
+| SOAP server (Railway) | Done |
 
 ## How It Works
 
@@ -43,7 +46,7 @@ Expenses are **queued**, not synced in real-time. The QuickBooks Web Connector p
 | Storage | Supabase Storage (`receipts` bucket) |
 | OCR | Google Cloud Vision API |
 | Auth | Supabase Auth (email/password, role-based) |
-| Hosting | Vercel (frontend), Supabase (backend), Railway/Render (SOAP) |
+| Hosting | Vercel (frontend), Supabase (backend), Railway (SOAP) |
 
 ## Local Development
 
@@ -96,7 +99,7 @@ QBO_FRONTEND_URL=https://bmb-scanner-v1.vercel.app
 PORT=8080
 SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<service role key>
-SOAP_SERVER_URL=https://<deployed-url>
+SOAP_SERVER_URL=https://soap-server-production.up.railway.app
 ```
 
 ## Project Structure
@@ -210,13 +213,13 @@ npx supabase db push
 
 # SOAP server (from soap-server/)
 npm run build
-# Deploy dist/ to Railway, Render, or any persistent HTTPS host
+# Deployed on Railway: https://soap-server-production.up.railway.app
 ```
 
 ## QuickBooks Desktop Setup
 
 1. Install QuickBooks Web Connector (QBWC 2.3+) on the PC running QuickBooks Desktop
-2. Download `.qwc` file from `https://<soap-server>/qwc`
+2. Download `.qwc` file from `https://soap-server-production.up.railway.app/qwc`
 3. Open in QBWC and enter the shared password
 4. Grant "always allow" access to the company file
 5. Set auto-run interval to 5 minutes

@@ -19,7 +19,7 @@ A mobile-first PWA that lets users photograph receipts, extract expense data via
 | OCR | Google Cloud Vision API (called from frontend) |
 | Auth | Supabase Auth (email/password) with role-based access (admin/user) |
 | QB Integration | QBWC (poll-based SOAP ↔ QBXML) |
-| Hosting | Vercel (frontend), Supabase (edge functions + DB), Railway/Render (SOAP server) |
+| Hosting | Vercel (frontend), Supabase (edge functions + DB), Railway (SOAP server) |
 
 ## Architecture Overview
 
@@ -39,6 +39,7 @@ Phone → Frontend → Supabase Edge Function → Queue Table (Supabase DB)
 - **Supabase project ref:** `lgodlepuythshpzayzba`
 - **Supabase dashboard:** https://supabase.com/dashboard/project/lgodlepuythshpzayzba
 - **Edge Function logs:** https://supabase.com/dashboard/project/lgodlepuythshpzayzba/functions/qbo-api/logs
+- **SOAP server:** https://soap-server-production.up.railway.app
 - **Admin user:** `gustavo@targetdial.co`
 
 ## Completed Phases
@@ -228,7 +229,7 @@ QBO_FRONTEND_URL=https://bmb-scanner-v1.vercel.app
 PORT=8080
 SUPABASE_URL=https://lgodlepuythshpzayzba.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=<service role key>
-SOAP_SERVER_URL=https://<deployed-url>
+SOAP_SERVER_URL=https://soap-server-production.up.railway.app
 ```
 
 ## Deploy Commands
@@ -315,7 +316,6 @@ npm run dev          # ts-node with nodemon
 
 ## Suggested Next Steps
 
-- **Deploy SOAP server** — Railway or Render, configure HTTPS
 - **Seed `qbd_connection`** — Insert initial connection record with hashed password
 - **Test with QBD** — Install QBWC, run first sync cycle end-to-end
 - **Bulk submit** — "Submit All" button to queue all pending expenses at once
