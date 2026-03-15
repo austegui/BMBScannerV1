@@ -14,7 +14,7 @@ A mobile-first Progressive Web App (PWA) for photographing receipts, extracting 
 | Admin dashboard (Users, Expenses, Queue, Health) | Done |
 | Role-based access control (admin/user) | Done |
 | User management (invite, roles, activate/deactivate) | Done |
-| SOAP server deployment | Pending |
+| SOAP server | Done (deploy to production host pending) |
 
 ## How It Works
 
