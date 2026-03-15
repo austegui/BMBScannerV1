@@ -45,8 +45,8 @@ const JWKS_URL = `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`
 app.use('*', async (c, next) => {
   const path = c.req.path
 
-  // Health check is public
-  if (path.endsWith('/health')) {
+  // Public health check only (not /admin/health which requires auth)
+  if (path.endsWith('/health') && !path.includes('/admin/')) {
     return next()
   }
 
