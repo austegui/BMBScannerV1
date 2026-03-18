@@ -15,8 +15,6 @@ interface ExpenseData extends ReceiptData {
   categoryId?: string;
   paymentAccount?: string;
   paymentAccountId?: string;
-  classId?: string | null;
-  className?: string | null;
   vendorId?: string | null;
   memo?: string;
   // Legacy field kept for compatibility
@@ -190,7 +188,7 @@ export function CameraCapture({ onComplete, onCancel, userId }: CameraCapturePro
         qbo_account_id: expenseData.categoryId ?? null,
         qbo_account_name: expenseData.category ?? null,
         qbo_payment_account_id: expenseData.paymentAccountId ?? null,
-        qbo_class_id: expenseData.classId ?? null,
+        qbo_class_id: null,
         qbo_purchase_id: null,
         qbo_pushed_at: null,
         qbo_error: null,
@@ -199,7 +197,7 @@ export function CameraCapture({ onComplete, onCancel, userId }: CameraCapturePro
         qbo_vendor_name: expenseData.merchantName || null,
         qbo_account_full_name: expenseData.category || null,
         qbo_payment_account_name: expenseData.paymentAccount || null,
-        qbo_class_name: expenseData.className ?? null,
+        qbo_class_name: null,
         qbd_queue_id: null,
         qbd_sync_status: 'pending',
       });

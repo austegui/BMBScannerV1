@@ -5,13 +5,26 @@ import { ReceiptData } from '../types/receipt';
 import { useState, useEffect, useMemo } from 'react';
 import {
   getQboAccounts,
-  getQboClasses,
   getQboVendors,
   getConnectionStatus,
   QboAccount,
-  QboClass,
   QboVendor,
 } from '../services/qboService';
+
+// Allowed expense categories (GL accounts from client's QB)
+const ALLOWED_CATEGORIES = [
+  'Computer and IT Services',
+  'Expense-Warehouse',
+  'Meals and Entertainment',
+  'Postage',
+  'Supplies-Office',
+  'Vehicle Fuel',
+  'Vehicle Maintenance',
+];
+
+// Default vendor and payment account names
+const DEFAULT_VENDOR_NAME = 'Ameris Pcard';
+const DEFAULT_PAYMENT_ACCOUNT_NAME = 'Ameris Business Visa';
 
 // Zod schema for QuickBooks expense form
 const expenseSchema = z.object({
@@ -23,8 +36,6 @@ const expenseSchema = z.object({
   categoryId: z.string().min(1, 'Category required'),
   paymentAccount: z.string().min(1, 'Payment account required'),
   paymentAccountId: z.string().min(1, 'Payment account required'),
-  classId: z.string().nullable(),
-  className: z.string().nullable(),
   tax: z.number().min(0).nullable(),
   memo: z.string().optional(),
 });
@@ -36,8 +47,6 @@ interface EditDefaults {
   categoryName: string;
   paymentAccountId: string;
   paymentAccountName: string;
-  classId: string | null;
-  className: string | null;
   memo: string | null;
   vendorId: string | null;
 }
@@ -88,14 +97,18 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
 
   // QBO entity state
   const [accounts, setAccounts] = useState<QboAccount[]>([]);
-  const [classes, setClasses] = useState<QboClass[]>([]);
   const [vendors, setVendors] = useState<QboVendor[]>([]);
   const [entitiesLoading, setEntitiesLoading] = useState(true);
   const [qboConnected, setQboConnected] = useState<boolean | null>(null);
 
-  // Separate accounts by type
+  // Filter expense accounts to only the 7 allowed categories
   const expenseAccounts = useMemo(
-    () => accounts.filter((a) => a.account_type === 'Expense'),
+    () => accounts.filter((a) =>
+      a.account_type === 'Expense' &&
+      ALLOWED_CATEGORIES.some((name) =>
+        (a.fully_qualified_name || a.name).toLowerCase().includes(name.toLowerCase())
+      )
+    ),
     [accounts]
   );
   const paymentAccounts = useMemo(
@@ -120,6 +133,22 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
     return score > 5 ? sortedVendors[0] : null;
   }, [sortedVendors, initialData.merchantName]);
 
+  // Auto-default: find the default payment account
+  const defaultPaymentAccount = useMemo(
+    () => paymentAccounts.find((a) =>
+      (a.fully_qualified_name || a.name).toLowerCase().includes(DEFAULT_PAYMENT_ACCOUNT_NAME.toLowerCase())
+    ) ?? null,
+    [paymentAccounts]
+  );
+
+  // Auto-default: find the default vendor
+  const defaultVendor = useMemo(
+    () => vendors.find((v) =>
+      v.display_name.toLowerCase() === DEFAULT_VENDOR_NAME.toLowerCase()
+    ) ?? null,
+    [vendors]
+  );
+
   // Fetch QBO entities on mount
   useEffect(() => {
     let cancelled = false;
@@ -137,16 +166,14 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
         return;
       }
 
-      // Fetch all entities in parallel
-      const [accts, cls, vndrs] = await Promise.all([
+      // Fetch accounts and vendors in parallel (no more classes)
+      const [accts, vndrs] = await Promise.all([
         getQboAccounts(),
-        getQboClasses(),
         getQboVendors(),
       ]);
 
       if (cancelled) return;
       setAccounts(accts);
-      setClasses(cls);
       setVendors(vndrs);
       setEntitiesLoading(false);
     }
@@ -171,8 +198,6 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
     categoryId: '',
     paymentAccount: '',
     paymentAccountId: '',
-    classId: null,
-    className: null,
     tax: initialData.tax ?? null,
     memo: '',
   };
@@ -188,13 +213,25 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
     defaultValues,
   });
 
-  // When entities finish loading and we have a best vendor match, pre-select it
+  // When entities finish loading, auto-default vendor and payment account
   useEffect(() => {
-    if (!entitiesLoading && bestVendorMatch && !editDefaults) {
+    if (entitiesLoading || editDefaults) return;
+
+    // Auto-default vendor: use OCR best match, or fall back to default vendor (Ameris Pcard)
+    if (bestVendorMatch) {
       setValue('vendor', bestVendorMatch.display_name);
       setValue('vendorId', bestVendorMatch.qbo_id);
+    } else if (defaultVendor) {
+      setValue('vendor', defaultVendor.display_name);
+      setValue('vendorId', defaultVendor.qbo_id);
     }
-  }, [entitiesLoading, bestVendorMatch, editDefaults, setValue]);
+
+    // Auto-default payment account (Ameris Business Visa)
+    if (defaultPaymentAccount) {
+      setValue('paymentAccountId', defaultPaymentAccount.qbo_id);
+      setValue('paymentAccount', defaultPaymentAccount.fully_qualified_name || defaultPaymentAccount.name);
+    }
+  }, [entitiesLoading, bestVendorMatch, defaultVendor, defaultPaymentAccount, editDefaults, setValue]);
 
   // When editing, pre-fill QBO dropdowns from saved values
   useEffect(() => {
@@ -206,10 +243,6 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
       if (editDefaults.paymentAccountId) {
         setValue('paymentAccountId', editDefaults.paymentAccountId);
         setValue('paymentAccount', editDefaults.paymentAccountName);
-      }
-      if (editDefaults.classId) {
-        setValue('classId', editDefaults.classId);
-        setValue('className', editDefaults.className);
       }
       if (editDefaults.memo) {
         setValue('memo', editDefaults.memo);
@@ -227,7 +260,6 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
   const watchedVendorId = watch('vendorId');
   const watchedCategoryId = watch('categoryId');
   const watchedPaymentAccountId = watch('paymentAccountId');
-  const watchedClassId = watch('classId');
 
   const onSubmit = (data: ExpenseFormData) => {
     // Convert back to ReceiptData format with QBO fields for CameraCapture
@@ -236,8 +268,6 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
       categoryId: string;
       paymentAccount: string;
       paymentAccountId: string;
-      classId: string | null;
-      className: string | null;
       vendorId: string | null;
       memo?: string;
     } = {
@@ -250,8 +280,6 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
       categoryId: data.categoryId,
       paymentAccount: data.paymentAccount,
       paymentAccountId: data.paymentAccountId,
-      classId: data.classId,
-      className: data.className,
       vendorId: data.vendorId,
       memo: data.memo,
     };
@@ -273,20 +301,6 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
     if (acct) {
       setValue('paymentAccountId', acct.qbo_id);
       setValue('paymentAccount', acct.fully_qualified_name || acct.name);
-    }
-  };
-
-  const handleClassChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const qboId = e.target.value;
-    if (!qboId) {
-      setValue('classId', null);
-      setValue('className', null);
-    } else {
-      const cls = classes.find((c) => c.qbo_id === qboId);
-      if (cls) {
-        setValue('classId', cls.qbo_id);
-        setValue('className', cls.fully_qualified_name || cls.name);
-      }
     }
   };
 
@@ -670,30 +684,6 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
             </p>
           )}
         </div>
-
-        {/* Class (optional) */}
-        {classes.length > 0 && (
-          <div style={fieldStyle}>
-            <label htmlFor="classSelect" style={labelStyle}>
-              Class (optional)
-            </label>
-            <select
-              id="classSelect"
-              value={watchedClassId ?? ''}
-              onChange={handleClassChange}
-              style={selectStyle}
-            >
-              <option value="">No class</option>
-              {classes.map((cls) => (
-                <option key={cls.qbo_id} value={cls.qbo_id}>
-                  {cls.fully_qualified_name || cls.name}
-                </option>
-              ))}
-            </select>
-            <input type="hidden" {...register('classId')} />
-            <input type="hidden" {...register('className')} />
-          </div>
-        )}
 
         {/* Tax (optional) */}
         <div style={fieldStyle}>

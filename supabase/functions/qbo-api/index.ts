@@ -161,7 +161,7 @@ function buildCreditCardChargeAdd(data: {
   memo?: string
   expenseAccountName: string
   amount: number
-  className?: string
+  lineMemo?: string
 }): string {
   return `<?xml version="1.0"?>
 <?qbxml version="16.0"?>
@@ -178,8 +178,8 @@ function buildCreditCardChargeAdd(data: {
         <ExpenseLineAdd>
           <AccountRef><FullName>${escapeXml(data.expenseAccountName)}</FullName></AccountRef>
           <Amount>${data.amount.toFixed(2)}</Amount>${
-    data.className ? `
-          <ClassRef><FullName>${escapeXml(data.className)}</FullName></ClassRef>` : ''
+    data.lineMemo ? `
+          <Memo>${escapeXml(data.lineMemo)}</Memo>` : ''
   }
         </ExpenseLineAdd>
       </CreditCardChargeAdd>
@@ -195,7 +195,7 @@ function buildCheckAdd(data: {
   memo?: string
   expenseAccountName: string
   amount: number
-  className?: string
+  lineMemo?: string
 }): string {
   return `<?xml version="1.0"?>
 <?qbxml version="16.0"?>
@@ -212,8 +212,8 @@ function buildCheckAdd(data: {
         <ExpenseLineAdd>
           <AccountRef><FullName>${escapeXml(data.expenseAccountName)}</FullName></AccountRef>
           <Amount>${data.amount.toFixed(2)}</Amount>${
-    data.className ? `
-          <ClassRef><FullName>${escapeXml(data.className)}</FullName></ClassRef>` : ''
+    data.lineMemo ? `
+          <Memo>${escapeXml(data.lineMemo)}</Memo>` : ''
   }
         </ExpenseLineAdd>
       </CheckAdd>
@@ -541,7 +541,6 @@ app.post('/expenses/:expenseId/submit', async (c) => {
     let vendorName = expense.qbo_vendor_name || expense.vendor
     let expenseAccountName = expense.qbo_account_full_name || expense.qbo_account_name || expense.category
     let paymentAccountName = expense.qbo_payment_account_name || expense.payment_method
-    const className = expense.qbo_class_name || null
 
     // If we have QBO IDs but no names, look up from cache
     if (expense.qbo_vendor_id && !expense.qbo_vendor_name) {
@@ -571,21 +570,27 @@ app.post('/expenses/:expenseId/submit', async (c) => {
       if (pa) paymentAccountName = pa.fully_qualified_name
     }
 
-    // Build memo with receipt URL appended
-    let memo = expense.memo || ''
+    // Transaction-level memo: merchant/store name from receipt + receipt image URL
+    // This goes into the main "Memo" field on the QB Credit Card Charge screen
+    const merchantName = expense.vendor || ''
+    let txnMemo = merchantName
     if (expense.image_url) {
-      memo = memo ? `${memo} | Receipt: ${expense.image_url}` : `Receipt: ${expense.image_url}`
+      txnMemo = txnMemo ? `${txnMemo} | Receipt: ${expense.image_url}` : `Receipt: ${expense.image_url}`
     }
+
+    // Line-level memo: user's notes from the memo field
+    // This goes into the expense line "Memo" field on the QB Credit Card Charge screen
+    const lineMemo = expense.memo || ''
 
     // Build QBXML
     const buildData = {
       paymentAccountName,
       txnDate: expense.date,
       vendorName,
-      memo: memo || undefined,
+      memo: txnMemo || undefined,
       expenseAccountName,
       amount: Number(expense.amount),
-      className: className || undefined,
+      lineMemo: lineMemo || undefined,
     }
 
     const qbxml = isCreditCard

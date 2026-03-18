@@ -16,8 +16,6 @@ interface ExpenseData extends ReceiptData {
   categoryId?: string;
   paymentAccount?: string;
   paymentAccountId?: string;
-  classId?: string | null;
-  className?: string | null;
   vendorId?: string | null;
   memo?: string;
 }
@@ -40,8 +38,6 @@ export function EditExpense({ expense, onComplete, onCancel }: EditExpenseProps)
     categoryName: expense.qbo_account_name ?? expense.category,
     paymentAccountId: expense.qbo_payment_account_id ?? '',
     paymentAccountName: expense.payment_method,
-    classId: expense.qbo_class_id,
-    className: null as string | null,
     memo: expense.memo,
     vendorId: expense.qbo_vendor_id,
   };
@@ -68,11 +64,11 @@ export function EditExpense({ expense, onComplete, onCancel }: EditExpenseProps)
         qbo_account_id: expenseData.categoryId ?? null,
         qbo_account_name: expenseData.category ?? null,
         qbo_payment_account_id: expenseData.paymentAccountId ?? null,
-        qbo_class_id: expenseData.classId ?? null,
+        qbo_class_id: null,
         qbo_vendor_name: expenseData.merchantName || null,
         qbo_account_full_name: expenseData.category || null,
         qbo_payment_account_name: expenseData.paymentAccount || null,
-        qbo_class_name: expenseData.className ?? null,
+        qbo_class_name: null,
       });
 
       toast('success', 'Expense updated');
