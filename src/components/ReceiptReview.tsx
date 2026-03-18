@@ -112,7 +112,7 @@ export function ReceiptReview({ initialData, previewUrl, ocrText, editDefaults, 
     [accounts]
   );
   const paymentAccounts = useMemo(
-    () => accounts.filter((a) => a.account_type === 'Credit Card' || a.account_type === 'Bank'),
+    () => accounts.filter((a) => a.account_type === 'Credit Card' || a.account_type === 'CreditCard' || a.account_type === 'Bank'),
     [accounts]
   );
 
